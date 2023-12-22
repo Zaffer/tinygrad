@@ -1,104 +1,74 @@
-import numpy as np
-import ctypes, functools
-import extra.hip_wrapper as hip
-from typing import Tuple
-from tinygrad.helpers import DEBUG, getenv, diskcache
-from tinygrad.ops import Compiled
-from tinygrad.runtime.lib import RawBufferCopyInOut, LRUAllocator, RawBufferTransfer
+import ctypes, functools, subprocess
+from typing import Tuple, TypeVar
+import gpuctypes.hip as hip
+from tinygrad.helpers import DEBUG, getenv, diskcache, from_mv, init_c_var, compile_cuda_style, encode_args_cuda_style, time_execution_cuda_style
+from tinygrad.device import Compiled, LRUAllocator, MallocAllocator
+from tinygrad.renderer.cstyle import HIPRenderer
 from tinygrad.codegen.kernel import LinearizerOptions
-from tinygrad.renderer.cstyle import uops_to_cstyle, CStyleLanguage
-
-# TODO: if you fork and exit the child process after creating anything with cl on AMD, it hangs on e.wait()
-if DEBUG >= 6:
-  from extra.helpers import enable_early_exec
-  early_exec = enable_early_exec()
 
 # The default HIP stream is used for everything.
+MOCKHIP = getenv("MOCKHIP") # for CI. don't run kernels, only check if they compile
 
-class HIPAllocator(LRUAllocator):
-  def _do_alloc(self, size, dtype, device, **kwargs):
-    hip.hipSetDevice(device)
-    return hip.hipMalloc(size * dtype.itemsize)
-  def _do_free(self, buf): hip.hipFree(buf)
-  def _cached_bufkey(self, size, dtype, device): return (device, size*dtype.itemsize) # Buffers of the same length could be reused, no matter what dtype.
+def check(status):
+  if status != 0: raise RuntimeError(f"HIP Error {status}, {ctypes.string_at(hip.hipGetErrorString(status)).decode()}")
 
-class _HIP:
-  def __init__(self, device=None):
-    self.default_device = device or getenv("HIP_DEFAULT_DEVICE")
-    hip.hipSetDevice(self.default_device)
-    self.device_count = hip.hipGetDeviceCount()
-    self.allocator = HIPAllocator(hip.hipGetDeviceProperties(self.default_device).totalGlobalMem)
-HIP = _HIP()
-
-class RawHIPBuffer(RawBufferCopyInOut, RawBufferTransfer):
-  def __init__(self, size, dtype, device=HIP.default_device, buf=None, allocator=HIP.allocator): super().__init__(size, dtype, buf=buf, allocator=allocator, **{'device': int(device)})
-  def _copyin(self, x:np.ndarray):
-    hip.hipSetDevice(self._device)
-    hip.hipMemcpyAsync(self._buf, np.require(x, requirements='C').ctypes.data_as(ctypes.c_void_p), self.size * self.dtype.itemsize, hip.hipMemcpyHostToDevice, 0)
-  def _copyout(self, x:np.ndarray):
-    hip.hipSetDevice(self._device)
-    hip.hipMemcpy(x.ctypes.data, self._buf, self.size * self.dtype.itemsize, hip.hipMemcpyDeviceToHost)
-  def _transfer(self, x):
-    hip.hipSetDevice(x._device)
-    hip.hipMemcpy(self._buf, x._buf, self.size * self.dtype.itemsize, hip.hipMemcpyDeviceToDevice)
+# TODO: remove these helpers, they increase complexity
+def hip_time_execution(cb, enable=False): return time_execution_cuda_style(cb, hip.hipEvent_t, hip.hipEventCreate, hip.hipEventRecord, hip.hipEventSynchronize, hip.hipEventDestroy, hip.hipEventElapsedTime, enable=enable)  # noqa: E501
 
 @diskcache
-def compile_hip(prg) -> bytes:
-  prog = hip.hiprtcCreateProgram(prg, "<null>", [], [])
-  hip.hiprtcCompileProgram(prog, [f'--offload-arch={hip.hipGetDeviceProperties(HIP.default_device).gcnArchName}'])
-  return hip.hiprtcGetCode(prog)
+def compile_hip(prg) -> bytes: return compile_cuda_style(prg, [f'--offload-arch={HIPDevice.default_arch_name}'], hip.hiprtcProgram, hip.hiprtcCreateProgram, hip.hiprtcCompileProgram, hip.hiprtcGetCode, hip.hiprtcGetCodeSize, hip.hiprtcGetProgramLog, hip.hiprtcGetProgramLogSize, check)  # noqa: E501
 
 class HIPProgram:
-  def __init__(self, name:str, prg:bytes):
-    self.modules, self.prgs = [], []
+  def __init__(self, device:int, name:str, lib:bytes):
+    self.device, self.name, self.lib = device, name, lib
 
     if DEBUG >= 6:
-      asm = early_exec((["/opt/rocm/llvm/bin/llvm-objdump", '-d', '-'], prg))
+      asm = subprocess.check_output(["/opt/rocm/llvm/bin/llvm-objdump", '-d', '-'], input=lib)
       print('\n'.join([x for x in asm.decode('utf-8').split("\n") if 's_code_end' not in x]))
 
-    for i in range(HIP.device_count):
-      hip.hipSetDevice(i)
-      self.modules.append(hip.hipModuleLoadData(prg))
-      self.prgs.append(hip.hipModuleGetFunction(self.modules[-1], name))
-
-  def __call__(self, *args, global_size:Tuple[int,int,int], local_size:Tuple[int,int,int], wait=False):
-    hip.hipSetDevice(args[0]._device)
-    if wait:
-      start, end = hip.hipEventCreate(), hip.hipEventCreate()
-      hip.hipEventRecord(start)
-    class PackageStruct(ctypes.Structure):
-      _fields_ = [(f'field{idx}', ctypes.c_void_p if not isinstance(args[idx], int) else ctypes.c_int) for idx in range(len(args))]
-    struct = PackageStruct(*[data._buf if not isinstance(data, int) else np.int32(data) for data in args])
-    hip.hipModuleLaunchKernel(self.prgs[args[0]._device], global_size[0], global_size[1], global_size[2], local_size[0], local_size[1], local_size[2], 0, 0, struct)
-    if wait:
-      hip.hipEventRecord(end)
-      hip.hipEventSynchronize(end)
-      return hip.hipEventElapsedTime(start, end)*1e-3
+    if MOCKHIP: return
+    check(hip.hipSetDevice(self.device))
+    self.module = init_c_var(hip.hipModule_t(), lambda x: check(hip.hipModuleLoadData(ctypes.byref(x), lib)))
+    self.prg = init_c_var(hip.hipFunction_t(), lambda x: check(hip.hipModuleGetFunction(ctypes.byref(x), self.module, name.encode("utf-8"))))
 
   def __del__(self):
-    for module in self.modules: hip.hipModuleUnload(module)
+    if not MOCKHIP: check(hip.hipModuleUnload(self.module))
 
-renderer = functools.partial(uops_to_cstyle, CStyleLanguage(
-  kernel_prefix = "#include <hip/hip_common.h>\n#define INFINITY (__builtin_inff())\n#define NAN (__builtin_nanf(\"\"))" + """
-__device__ float4 max(float4 x, float4 y) { return float4(max(x.x, y.x), max(x.y, y.y), max(x.z, y.z), max(x.w, y.w)); }
-__device__ float4 pow(float x, float4 y) { return float4(pow(x, y.x), pow(x, y.y), pow(x, y.z), pow(x, y.w)); }
-__device__ float4 pow(float4 x, float4 y) { return float4(pow(x.x, y.x), pow(x.y, y.y), pow(x.z, y.z), pow(x.w, y.w)); }
-__device__ float4 log2(float4 x) { return float4(log2(x.x), log2(x.y), log2(x.z), log2(x.w)); }
-__device__ float4 exp2(float4 x) { return float4(exp2(x.x), exp2(x.y), exp2(x.z), exp2(x.w)); }
-__device__ float4 sin(float4 x) { return float4(sin(x.x), sin(x.y), sin(x.z), sin(x.w)); }
-typedef float float8 __attribute__((ext_vector_type(8)));
-typedef _Float16 half16 __attribute__((ext_vector_type(16)));
-extern "C" __global__
-  """, launch_bounds=True,
-  smem_prefix = "__shared__ ", smem_prefix_for_cast=False, barrier = "__syncthreads();", float4 = "make_float4", uses_vload=True, uses_ptr_arithmetic=True, arg_int_prefix = "const int",
-  half_prekernel = "#include <hip/hip_fp16.h>\nusing half4 = HIP_vector_type<half, 4>;" + """
-__device__ float vload_half(size_t offset, const half *p) { return (float)*(p + offset); }
-__device__ float2 vload_half2(size_t offset, const half *p) { return make_float2((float)*(p + offset*2), (float)*(p + offset*2 + 1)); }
-__device__ float4 vload_half4(size_t offset, const half *p) { return make_float4((float)*(p + offset*4), (float)*(p + offset*4 + 1), (float)*(p + offset*4 + 2), (float)*(p + offset*4 + 3)); }
-__device__ void vstore_half(float data, size_t offset, half *p) { *(p + offset) = (half)data; }
-__device__ void vstore_half2(float2 data, size_t offset, half *p) { *(p + offset*2) = (half)data.x; *(p + offset*2 + 1) = (half)data.y; }
-__device__ void vstore_half4(float4 data, size_t offset, half *p) { *(p + offset*4) = (half)data.x; *(p + offset*4 + 1) = (half)data.y; *(p + offset*4 + 2) = (half)data.z; *(p + offset*4 + 3) = (half)data.w; }
-  """,
-  gid = [f'blockIdx.{chr(120+i)}' for i in range(3)],
-  lid = [f'threadIdx.{chr(120+i)}' for i in range(3)]))
-HIPBuffer = Compiled(RawHIPBuffer, LinearizerOptions(device="HIP"), renderer, compile_hip, HIPProgram, hip.hipDeviceSynchronize)
+  def __call__(self, *args, global_size:Tuple[int,int,int], local_size:Tuple[int,int,int], vals:Tuple[int, ...]=(), wait=False):
+    if MOCKHIP: return float("inf")
+    check(hip.hipSetDevice(self.device))
+    return hip_time_execution(lambda: check(hip.hipModuleLaunchKernel(self.prg, *global_size, *local_size, 0, None, None, encode_args_cuda_style(args, vals, hip.hipDeviceptr_t, marks=(1,2,3))[0])), enable=wait)  # noqa: E501
+
+T = TypeVar("T")
+class HIPAllocator(LRUAllocator):
+  def __init__(self, device):
+    self.device = device
+    super().__init__()
+  def _alloc(self, size:int):
+    check(hip.hipSetDevice(self.device))
+    return init_c_var(hip.hipDeviceptr_t(), lambda x: check(hip.hipMalloc(ctypes.byref(x), size)))
+  def _free(self, opaque:T): check(hip.hipFree(opaque))
+  def copyin(self, dest:T, src: memoryview):
+    check(hip.hipSetDevice(self.device))
+    # TODO: have to make sure src isn't freed to make this async
+    check(hip.hipMemcpy(dest, from_mv(src), len(src), hip.hipMemcpyHostToDevice))
+  def copyout(self, dest:memoryview, src:T):
+    check(hip.hipSetDevice(self.device))
+    check(hip.hipMemcpy(from_mv(dest), src, len(dest), hip.hipMemcpyDeviceToHost))
+  def transfer(self, dest:T, src:T, sz:int):
+    check(hip.hipSetDevice(self.device))
+    # TODO: hipMemcpyAsync, but you have to track the "src" buffer to not free it
+    check(hip.hipMemcpy(dest, src, sz, hip.hipMemcpyDeviceToDevice))
+
+class HIPDevice(Compiled):
+  default_arch_name = "gfx1100"
+  def __init__(self, device:str=""):
+    self.device = int(device.split(":")[1]) if ":" in device else 0
+    if self.device == 0 and not MOCKHIP: HIPDevice.default_arch_name = init_c_var(hip.hipDeviceProp_t(), lambda x: check(hip.hipGetDeviceProperties(x, self.device))).gcnArchName.decode()  # noqa: E501
+
+    from tinygrad.runtime.graph.hip import HIPGraph
+    super().__init__(MallocAllocator if MOCKHIP else HIPAllocator(self.device), LinearizerOptions(device="HIP"), HIPRenderer,
+                     compile_hip, functools.partial(HIPProgram, self.device), HIPGraph)
+  def synchronize(self):
+    check(hip.hipSetDevice(self.device))
+    check(hip.hipDeviceSynchronize())

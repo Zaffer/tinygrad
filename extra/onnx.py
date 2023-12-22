@@ -21,8 +21,7 @@ def safe_numpy(t) -> np.ndarray:
   if t not in numpy_cache:
     if DEBUG >= 3: print("numpy cache miss", t)
     tmp = t.numpy()
-    numpy_cache[t] = tmp if len(tmp.shape) else tmp.reshape(1)
-  assert len(numpy_cache[t].shape) > 0
+    numpy_cache[t] = tmp
   return numpy_cache[t]
 
 onnx_ops = importlib.import_module('extra.onnx_ops')
@@ -147,7 +146,9 @@ def get_run_onnx(onnx_model: ModelProto):
 
       # NOTE some ops live here because they require access to some local variables
       # have to use n.output for cases when num_outputs is absent
-      if n.op_type == "Split":
+      if n.op_type in onnx_ops.tensor_methods:
+        ret = getattr(Tensor, n.op_type.lower())(*inp, **opt)
+      elif n.op_type == "Split":
         axis = opt.get("axis", 0)
         split = None if len(inp) == 1 else [int(x) for x in safe_numpy(inp[1])]
         if split is None:
@@ -168,7 +169,7 @@ def get_run_onnx(onnx_model: ModelProto):
           axes, ends, starts, steps = list(opt.get("axes", range(inp[0].ndim))), list(opt["ends"]), list(opt["starts"]), [1]*inp[0].ndim
         else:
           starts, ends = inp[1:3]
-          axes = safe_numpy(Tensor.arange(inp[0].ndim, dtype=dtypes.int32) if len(inp) <= 3 else inp[3]).tolist()
+          axes = safe_numpy(Tensor.arange(inp[0].ndim) if len(inp) <= 3 else inp[3]).tolist()
           steps = safe_numpy(inp[4]) if len(inp) > 4 else [1]*inp[0].ndim
           starts, ends = safe_numpy(starts.ceil().cast(dtypes.int32)).tolist(), safe_numpy(ends.ceil().cast(dtypes.int32)).tolist()
         arg = [(0,x,1) for x in inp[0].shape]

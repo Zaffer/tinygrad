@@ -5,7 +5,7 @@ from tinygrad.jit import TinyJit
 from tinygrad.nn.state import get_state_dict
 import json
 
-EXPORT_SUPPORTED_DEVICE = ["WEBGPU", "CLANG", "CUDA", "GPU", "METAL"]
+EXPORT_SUPPORTED_DEVICE = ["WEBGPU", "CLANG", "CUDA", "GPU"]
 
 def compile_net(run:TinyJit, special_names:Dict[int,str]) -> Tuple[Dict[str,str],List[Tuple[str,List[str],List[int]]],Dict[str,Tuple[int,DType,int]],Dict[str,Tensor]]:
   functions, bufs, bufs_to_save, statements, bufnum = {}, {}, {}, [], 0
@@ -17,9 +17,9 @@ def compile_net(run:TinyJit, special_names:Dict[int,str]) -> Tuple[Dict[str,str]
       key = id(arg)
       if key not in bufs:
         if key in special_names:
-          bufs[key] = (special_names[key], arg._memsz, arg.dtype, key)
+          bufs[key] = (special_names[key], arg.size*arg.dtype.itemsize, arg.dtype, key)
         else:
-          bufs[key] = (f"buf_{bufnum}", arg._memsz, arg.dtype, key)
+          bufs[key] = (f"buf_{bufnum}", arg.size*arg.dtype.itemsize, arg.dtype, key)
           bufnum += 1
           if i > 0: bufs_to_save[bufs[key][0]] = arg   # if first usage of a buffer is not an output, and it's not a special name
       cargs.append(bufs[key][0])
@@ -141,7 +141,7 @@ def export_model(model, target:str, *inputs):
   run,special_names = jit_model(model, *inputs)
   functions, statements, bufs, bufs_to_save = compile_net(run, special_names)
   state = get_state_dict(model)
-  weight_names = {id(x.lazydata.realized): name for name, x in state.items()}
+  weight_names = {id(x.lazydata.base.realized): name for name, x in state.items()}
   input_names = [name for _,name in special_names.items() if "input" in name]
   output_names = [name for _,name in special_names.items() if "output" in name]
   prg = ""

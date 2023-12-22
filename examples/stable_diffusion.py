@@ -6,12 +6,13 @@ import gzip, argparse, math, re
 from functools import lru_cache
 from collections import namedtuple
 
+from PIL import Image
+import numpy as np
 from tqdm import tqdm
 from tinygrad.tensor import Tensor
-from tinygrad.ops import Device
-from tinygrad.helpers import dtypes, GlobalCounters, Timing, Context, getenv
+from tinygrad import Device
+from tinygrad.helpers import dtypes, GlobalCounters, Timing, Context, getenv, fetch, colored
 from tinygrad.nn import Conv2d, Linear, GroupNorm, LayerNorm, Embedding
-from extra.utils import download_file
 from tinygrad.nn.state import torch_load, load_state_dict, get_state_dict
 from tinygrad.jit import TinyJit
 
@@ -251,7 +252,8 @@ class Upsample:
 
 def timestep_embedding(timesteps, dim, max_period=10000):
   half = dim // 2
-  freqs = (-math.log(max_period) * Tensor.arange(half) / half).exp()
+  # TODO: remove explicit dtypes after broadcast fix
+  freqs = (-math.log(max_period) * Tensor.arange(half, dtype=dtypes.float32) / half).exp()
   args = timesteps * freqs
   return Tensor.cat(args.cos(), args.sin()).reshape(1, -1)
 
@@ -405,10 +407,7 @@ class CLIPTextTransformer:
 
 # Clip tokenizer, taken from https://github.com/openai/CLIP/blob/main/clip/simple_tokenizer.py (MIT license)
 @lru_cache()
-def default_bpe():
-  fn = Path(__file__).parents[1] / "weights/bpe_simple_vocab_16e6.txt.gz"
-  download_file("https://github.com/openai/CLIP/raw/main/clip/bpe_simple_vocab_16e6.txt.gz", fn)
-  return fn
+def default_bpe(): return fetch("https://github.com/openai/CLIP/raw/main/clip/bpe_simple_vocab_16e6.txt.gz", "bpe_simple_vocab_16e6.txt.gz")
 
 def get_pairs(word):
   """Return set of symbol pairs in a word.
@@ -576,13 +575,11 @@ class StableDiffusion:
 # ** ldm.modules.encoders.modules.FrozenCLIPEmbedder
 # cond_stage_model.transformer.text_model
 
-# this is sd-v1-4.ckpt
-FILENAME = Path(__file__).parents[1] / "weights/sd-v1-4.ckpt"
-
 if __name__ == "__main__":
+  default_prompt = "a horse sized cat eating a bagel"
   parser = argparse.ArgumentParser(description='Run Stable Diffusion', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
   parser.add_argument('--steps', type=int, default=5, help="Number of steps in diffusion")
-  parser.add_argument('--prompt', type=str, default="a horse sized cat eating a bagel", help="Phrase to render")
+  parser.add_argument('--prompt', type=str, default=default_prompt, help="Phrase to render")
   parser.add_argument('--out', type=str, default=Path(tempfile.gettempdir()) / "rendered.png", help="Output filename")
   parser.add_argument('--noshow', action='store_true', help="Don't show the image")
   parser.add_argument('--fp16', action='store_true', help="Cast the weights to float16")
@@ -595,8 +592,7 @@ if __name__ == "__main__":
   model = StableDiffusion()
 
   # load in weights
-  download_file('https://huggingface.co/CompVis/stable-diffusion-v-1-4-original/resolve/main/sd-v1-4.ckpt', FILENAME)
-  load_state_dict(model, torch_load(FILENAME)['state_dict'], strict=False)
+  load_state_dict(model, torch_load(fetch('https://huggingface.co/CompVis/stable-diffusion-v-1-4-original/resolve/main/sd-v1-4.ckpt', 'sd-v1-4.ckpt'))['state_dict'], strict=False)
 
   if args.fp16:
     for l in get_state_dict(model).values():
@@ -643,10 +639,15 @@ if __name__ == "__main__":
   print(x.shape)
 
   # save image
-  from PIL import Image
-  import numpy as np
   im = Image.fromarray(x.numpy().astype(np.uint8, copy=False))
   print(f"saving {args.out}")
   im.save(args.out)
   # Open image.
   if not args.noshow: im.show()
+
+  # validation!
+  if args.prompt == default_prompt and args.steps == 5 and args.seed == 0 and args.guidance == 7.5:
+    ref_image = Tensor(np.array(Image.open(Path(__file__).parent / "stable_diffusion_seed0.png")))
+    distance = (((x - ref_image).cast(dtypes.float) / ref_image.max())**2).mean().item()
+    assert distance < 3e-4, f"validation failed with {distance=}"
+    print(colored(f"output validated with {distance=}", "green"))

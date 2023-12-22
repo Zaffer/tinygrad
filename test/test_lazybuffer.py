@@ -2,12 +2,12 @@
 import numpy as np
 import unittest
 from tinygrad.lazy import LazyBuffer
-from tinygrad.ops import Device
+from tinygrad import Device
 from tinygrad.tensor import Tensor
-from tinygrad.shape.symbolic import Variable
 from tinygrad.jit import CacheCollector
 
 class TestLazyBuffer(unittest.TestCase):
+  @unittest.skip("it doesn't work like this anymore")
   def test_fromcpu_buffer_sharing(self):
     a = np.arange(8)
     assert LazyBuffer.fromCPU(a).realized._buf is a
@@ -50,11 +50,11 @@ class TestLazyBuffer(unittest.TestCase):
   def test_children_count(self):
     a = Tensor.ones(8,8,8)
     d1 = a.sum((0))
-    d2 = a.sum((0)).reshape(32,2)
-    assert len(d1.lazydata.op.src[0].children) == 1
+    d2 = a.sum((0)).reshape(32,2) # noqa: F841
+    assert len(d1.lazydata.base.srcs[0].base.children) == 1
     in1 = d1.reshape(16,4)
     d3 = in1.reshape(8,8)
-    assert len(d3.lazydata.op.src[0].children) == 2
+    assert len(d3.lazydata.base.srcs[0].base.children) == 1
 
     CacheCollector.start()
     l = Tensor.ones(8,8)
@@ -64,10 +64,7 @@ class TestLazyBuffer(unittest.TestCase):
     de = d3 + r
     de.realize()
     cache = CacheCollector.finish()
-    assert len(cache) == 3
-    assert cache[0].prg.name.startswith("r_") # Reduce should not merged 2 times.
-    assert cache[1].prg.name.startswith("E_")
-    assert cache[2].prg.name.startswith("E_")
+    assert len(cache) == 2
 
 if __name__ == "__main__":
   unittest.main()

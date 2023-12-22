@@ -7,9 +7,6 @@ from tinygrad.nn.optim import Adam
 from extra.lr_scheduler import MultiStepLR, ReduceLROnPlateau, CosineAnnealingLR, OneCycleLR
 from extra.training import train, evaluate
 from extra.datasets import fetch_mnist
-import pytest
-
-pytestmark = [pytest.mark.exclude_cuda, pytest.mark.exclude_gpu]
 
 np.random.seed(1337)
 Tensor.manual_seed(1337)
@@ -57,7 +54,9 @@ def get_lrs(optim, sched, epochs, steps=1, accs=None):
 class TestLrScheduler(unittest.TestCase):
   def _test_lr_scheduler(self, tinygrad_sched, torch_sched, epochs, opts, atol, rtol):
     accs = opts.pop('accs', None)
-    tinygrad_optim, torch_optim = Adam([], lr=0.01), torch.optim.Adam([torch.tensor([0.], requires_grad=True)], lr=0.01)
+    test_tensor = Tensor([0], requires_grad=True)    # NOTE: optimizers are broken on 0-dim tensors because it broadcasts to [lr]
+    test_tensor.mean().backward()
+    tinygrad_optim, torch_optim = Adam([test_tensor], lr=0.01), torch.optim.Adam([torch.tensor([0.], requires_grad=True)], lr=0.01)
     tinygrad_sched, torch_sched = tinygrad_sched(tinygrad_optim, **opts), torch_sched(torch_optim, **opts)
 
     tinygrad_lrs = get_lrs(tinygrad_optim, tinygrad_sched, epochs, accs=accs)
@@ -98,7 +97,8 @@ class TestLrScheduler(unittest.TestCase):
     without = lr_scheduler_training()
     sched_fns = [MultiStepLR, ReduceLROnPlateau, CosineAnnealingLR, OneCycleLR]
     argss = [{'milestones': [5, 7, 10, 15], 'gamma': 0.5}, {'factor': 0.5, 'patience': 2}, {'T_max': 25, 'eta_min': 0.001},
-             {'pct_start': 0.3, 'anneal_strategy': 'linear', 'cycle_momentum': False, 'div_factor': 25.0, 'final_div_factor': 10000.0, 'max_lr':1e-5, 'total_steps': 25}]
+             {'pct_start': 0.3, 'anneal_strategy': 'linear', 'cycle_momentum': False, 'div_factor': 25.0, 'final_div_factor': 10000.0,
+              'max_lr':1e-5, 'total_steps': 25}]
     for sched_fn, args in zip(sched_fns, argss):
       with_sched = lr_scheduler_training(sched_fn, args)
       assert with_sched > without

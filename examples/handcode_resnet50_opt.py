@@ -1,13 +1,12 @@
 from typing import List
 from extra.models.resnet import ResNet50
 from tinygrad.tensor import Tensor
-from tinygrad.ops import LoadOps, Device, Compiled
+from tinygrad.ops import LoadOps, vars_from_ast
+from tinygrad.device import Device, Compiled
 from tinygrad.codegen.linearizer import Linearizer
-from tinygrad.features.search import time_linearizer, beam_search
+from tinygrad.features.search import time_linearizer, beam_search, bufs_from_lin
 from tinygrad.helpers import ansilen, DEBUG, getenv
-from tinygrad.lazy import vars_from_ast
 from tinygrad.shape.symbolic import sym_infer
-
 
 if __name__ == "__main__":
   mdl = ResNet50()
@@ -33,9 +32,7 @@ if __name__ == "__main__":
   total_tm = 0
   running_gflops = 0
   for i,si in enumerate(sched):
-    # create output/input buffers (NOTE: bufs_from_lin is slower, so we don't use it. TODO: fix)
-    rawbufs = [device.buffer(si.out.st.size(), si.out.dtype)] + [device.buffer(x.st.size(), x.dtype) for x in si.inputs]
-    #rawbufs = bufs_from_lin(lin)
+    rawbufs = bufs_from_lin(Linearizer(si.ast))
 
     # "linearize" the op into uops in different ways
     lins:List[Linearizer] = []
@@ -64,9 +61,9 @@ if __name__ == "__main__":
       choices.append((tm, gflops, lin.linearize()))
 
       # print all kernels
-      if DEBUG >= 1: print(f"                 kernel {i:2d} {lin.display_name+' '*(37-ansilen(lin.display_name))} {str(lin.global_size):18s} {str(lin.local_size):12s} takes {tm*1000:7.2f} ms, {gflops:6.0f} GFLOPS")
+      if DEBUG >= 1: print(f"                 kernel {i:2d} {lin.name+' '*(37-ansilen(lin.name))} {str(lin.global_size):18s} {str(lin.local_size):12s} takes {tm*1000:7.2f} ms, {gflops:6.0f} GFLOPS")
     tm, gflops, lin = sorted(choices, key=lambda x: x[0])[0]
-    print(f"*** {total_tm*1000:7.2f} ms : kernel {i:2d} {lin.display_name+' '*(37-ansilen(lin.display_name))} {str(lin.global_size):18s} {str(lin.local_size):12s} takes {tm*1000:7.2f} ms, {gflops:6.0f} GFLOPS")
+    print(f"*** {total_tm*1000:7.2f} ms : kernel {i:2d} {lin.name+' '*(37-ansilen(lin.name))} {str(lin.global_size):18s} {str(lin.local_size):12s} takes {tm*1000:7.2f} ms, {gflops:6.0f} GFLOPS")
     total_tm += tm
     running_gflops += gflops * tm
   print(f"******* total {total_tm*1000:.2f} ms, {running_gflops/total_tm:6.0f} GFLOPS")

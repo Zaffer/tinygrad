@@ -1,12 +1,10 @@
 import numpy as np
 import torch
-import struct
 import unittest, copy
 import mmap
 from tinygrad.tensor import Tensor, Device
-from tinygrad.helpers import dtypes
+from tinygrad.helpers import dtypes, temp
 from extra.gradcheck import numerical_jacobian, jacobian, gradcheck
-from extra.utils import temp
 
 x_init = np.random.randn(1,3).astype(np.float32)
 U_init = np.random.randn(3,3).astype(np.float32)
@@ -113,12 +111,12 @@ class TestTinygrad(unittest.TestCase):
 
     torch_x = torch.tensor(x, requires_grad=True)
     torch_W = torch.tensor(W, requires_grad=True)
-    torch_func = lambda x: torch.nn.functional.log_softmax(x.matmul(torch_W).relu(), dim=1)
+    def torch_func(x): return torch.nn.functional.log_softmax(x.matmul(torch_W).relu(), dim=1)
     PJ = torch.autograd.functional.jacobian(torch_func, torch_x).squeeze().numpy()
 
     tiny_x = Tensor(x, requires_grad=True)
     tiny_W = Tensor(W, requires_grad=True)
-    tiny_func = lambda x: x.dot(tiny_W).relu().log_softmax()
+    def tiny_func(x): return x.dot(tiny_W).relu().log_softmax()
     J = jacobian(tiny_func, tiny_x)
     NJ = numerical_jacobian(tiny_func, tiny_x)
 
@@ -131,7 +129,7 @@ class TestTinygrad(unittest.TestCase):
 
     tiny_x = Tensor(x, requires_grad=True)
     tiny_W = Tensor(W, requires_grad=True)
-    tiny_func = lambda x: x.dot(tiny_W).relu().log_softmax()
+    def tiny_func(x): return x.dot(tiny_W).relu().log_softmax()
 
     self.assertTrue(gradcheck(tiny_func, tiny_x, eps = 1e-3))
 
@@ -154,31 +152,32 @@ class TestTinygrad(unittest.TestCase):
     except: raise
     finally: Tensor.rand = original_rand
 
-  def test_zeros_like_has_same_dtype(self):
+  def test_zeros_like_has_same_dtype_and_shape(self):
     for datatype in [dtypes.float16, dtypes.float32, dtypes.int8, dtypes.int32, dtypes.int64, dtypes.uint8]:
       a = Tensor([1, 2, 3], dtype=datatype)
       b = Tensor.zeros_like(a)
-      assert a.dtype == b.dtype, f"a.dtype and b.dtype should be {datatype}"
-      assert a.shape == b.shape, f"shape mismatch (Tensor.zeros_like){a.shape} != (torch){b.shape}"
+      assert a.dtype == b.dtype, f"dtype mismatch {a.dtype=} != {b.dtype}"
+      assert a.shape == b.shape, f"shape mismatch {a.shape} != {b.shape}"
 
     a = Tensor([1, 2, 3])
     b = Tensor.zeros_like(a, dtype=dtypes.int8)
-    assert a.dtype != b.dtype and a.dtype == dtypes.float32 and b.dtype == dtypes.int8, "a.dtype should be float and b.dtype should be char"
-    assert a.shape == b.shape, f"shape mismatch (Tensor.zeros_like){a.shape} != (torch){b.shape}"
+    assert a.dtype == dtypes.default_int and b.dtype == dtypes.int8, "a.dtype should be int and b.dtype should be char"
+    assert a.shape == b.shape, f"shape mismatch {a.shape} != {b.shape}"
 
   def test_ones_like_has_same_dtype_and_shape(self):
     for datatype in [dtypes.float16, dtypes.float32, dtypes.int8, dtypes.int32, dtypes.int64, dtypes.uint8]:
       a = Tensor([1, 2, 3], dtype=datatype)
       b = Tensor.ones_like(a)
-      assert a.dtype == b.dtype, f"a.dtype and b.dtype should be {datatype}"
-      assert a.shape == b.shape, f"shape mismatch (Tensor.ones_like){a.shape} != (torch){b.shape}"
+      assert a.dtype == b.dtype, f"dtype mismatch {a.dtype=} != {b.dtype}"
+      assert a.shape == b.shape, f"shape mismatch {a.shape} != {b.shape}"
 
     a = Tensor([1, 2, 3])
     b = Tensor.ones_like(a, dtype=dtypes.int8)
-    assert a.dtype != b.dtype and a.dtype == dtypes.float32 and b.dtype == dtypes.int8, "a.dtype should be float and b.dtype should be char"
-    assert a.shape == b.shape, f"shape mismatch (Tensor.ones_like){a.shape} != (torch){b.shape}"
+    assert a.dtype == dtypes.default_int and b.dtype == dtypes.int8, "a.dtype should be int and b.dtype should be char"
+    assert a.shape == b.shape, f"shape mismatch {a.shape} != {b.shape}"
 
   def test_ndim(self):
+    assert Tensor(1).ndim == 0
     assert Tensor.randn(1).ndim == 1
     assert Tensor.randn(2,2,2).ndim == 3
     assert Tensor.randn(1,1,1,1,1,1).ndim == 6
@@ -205,12 +204,18 @@ class TestTinygrad(unittest.TestCase):
     self.assertEqual(Tensor.zeros([10,20,40]).shape, (10,20,40))
     self.assertEqual(Tensor.ones([10,20,40]).shape, (10,20,40))
 
+    self.assertEqual(Tensor.rand(1,10,20).shape, (1,10,20))
+    self.assertEqual(Tensor.rand((10,20,40)).shape, (10,20,40))
+
+    self.assertEqual(Tensor.empty(1,10,20).shape, (1,10,20))
+    self.assertEqual(Tensor.empty((10,20,40)).shape, (10,20,40))
+
   def test_numel(self):
     assert Tensor.randn(10, 10).numel() == 100
     assert Tensor.randn(1,2,5).numel() == 10
     assert Tensor.randn(1,1,1,1,1,1).numel() == 1
     assert Tensor([]).numel() == 0
-    # assert Tensor.randn(1,0,2,5) == 0 # TODO: fix empty tensors
+    assert Tensor.randn(1,0,2,5).numel() == 0
 
   def test_element_size(self):
     for _, dtype in dtypes.fields().items():
@@ -224,8 +229,8 @@ class TestTinygrad(unittest.TestCase):
     x.dot(layer).mean().backward()
 
   def test_zerosized_tensors(self):
-    Tensor([]).realize()
-    Tensor([]).numpy()
+    np.testing.assert_equal(Tensor([]).numpy(), np.array([]))
+    np.testing.assert_equal(Tensor(None).numpy(), np.array([]))
 
   def test_tensor_ndarray_dtype(self):
     arr = np.array([1]) # where dtype is implicitly int64
@@ -234,10 +239,46 @@ class TestTinygrad(unittest.TestCase):
     assert Tensor(arr, dtype=dtypes.float64).dtype == dtypes.float64 # check that it works for something else
 
   def test_tensor_list_dtype(self):
-    arr = [1]
-    assert Tensor(arr).dtype == Tensor.default_type
-    assert Tensor(arr, dtype=dtypes.float32).dtype == dtypes.float32
-    assert Tensor(arr, dtype=dtypes.float64).dtype == dtypes.float64
+    for arr in ([1], [[[1]]], [[1,1],[1,1]], [[[1,1],[1,1]],[[1,1],[1,1]]]):
+      assert Tensor(arr).dtype == dtypes.default_int
+      assert Tensor(arr, dtype=dtypes.float32).dtype == dtypes.float32
+      assert Tensor(arr, dtype=dtypes.float64).dtype == dtypes.float64
+
+    for arr in ([True], [[[False]]], [[True,False],[True,False]], [[[False,True],[False,False]],[[True,True],[False,True]]]):
+      assert Tensor(arr).dtype == dtypes.bool
+      assert Tensor(arr, dtype=dtypes.float32).dtype == dtypes.float32
+      assert Tensor(arr, dtype=dtypes.float64).dtype == dtypes.float64
+
+    # empty tensor defaults
+    for arr in ([], [[[]]], [[],[]]):
+      t = Tensor(arr)
+      assert t.dtype == dtypes.default_float
+      np.testing.assert_allclose(t.numpy(), np.array(arr))
+
+    # mixture of bool and int
+    for arr in ([True, 3], [[True],[3]], [[[True]], [[3]]], [[True, 3], [3, True]]):
+      t = Tensor(arr)
+      assert t.dtype == dtypes.default_int
+      np.testing.assert_allclose(t.numpy(), np.array(arr))
+
+    # mixture of bool, int and float
+    for arr in ([[True,True],[3.,True]], [[0,1],[3.,4]], [[[0],[1]],[[3.],[4]]], [[[True],[1]],[[3.],[4]]]):
+      t = Tensor(arr)
+      assert t.dtype == dtypes.default_float
+      np.testing.assert_allclose(t.numpy(), np.array(arr))
+
+  def test_tensor_list_shapes(self):
+    self.assertEqual(Tensor([[[]]]).shape, (1,1,0))
+    self.assertEqual(Tensor([[],[]]).shape, (2,0))
+    self.assertEqual(Tensor([[[[]],[[]]], [[[]],[[]]], [[[]],[[]]]]).shape, (3,2,1,0))
+
+  def test_tensor_list_errors(self):
+    # inhomogeneous shape
+    with self.assertRaises(ValueError): Tensor([[],[[]]])
+    with self.assertRaises(ValueError): Tensor([[1],[]])
+    with self.assertRaises(ValueError): Tensor([[1],[1],1])
+    with self.assertRaises(ValueError): Tensor([[[1,1,1],[1,1]]])
+    with self.assertRaises(ValueError): Tensor([[1,1,1],[[1,1,1]]])
 
   def test_tensor_copy(self):
     x = copy.deepcopy(Tensor.ones((3,3,3)))
@@ -261,6 +302,128 @@ class TestTinygrad(unittest.TestCase):
     assert not ua_arr.flags.aligned
     # force device copy - to() is opt'd away - Tensor(dev)/1 is ignored
     np.testing.assert_allclose(ua_arr, (Tensor(ua_arr)/Tensor(1)).numpy())
+
+class TestZeroShapeTensor(unittest.TestCase):
+  def test_shape_stride(self):
+    t = Tensor.rand(3, 2, 0)
+    assert t.shape == (3, 2, 0)
+    # numpy has stride 0, 0, 0; torch has stride 2, 1, 1
+    assert t.lazydata.st.real_strides() == (0, 0, 1)
+
+    t = Tensor.rand(3, 0, 2)
+    assert t.shape == (3, 0, 2)
+    # numpy has stride 0, 0, 0; torch has stride 2, 2, 1
+    assert t.lazydata.st.real_strides() == (0, 2, 1)
+
+    t = Tensor.rand(0, 0, 0)
+    assert t.shape == (0, 0, 0)
+    # numpy has stride 0, 0, 0; torch has stride 1, 1, 1
+    assert t.lazydata.st.real_strides() == (0, 0, 1)
+
+  def test_rand(self):
+    t = Tensor.rand(3, 2, 0)
+    assert t.shape == (3, 2, 0)
+    np.testing.assert_equal(t.numpy(), np.zeros((3, 2, 0)))
+    t = Tensor.rand(0)
+    assert t.shape == (0,)
+    np.testing.assert_equal(t.numpy(), np.zeros((0,)))
+    t = Tensor.rand(0, 0, 0)
+    assert t.shape == (0, 0, 0)
+    np.testing.assert_equal(t.numpy(), np.zeros((0, 0, 0)))
+
+  def test_full(self):
+    t = Tensor.zeros(3, 2, 0)
+    assert t.shape == (3, 2, 0)
+    np.testing.assert_equal(t.numpy(), np.zeros((3, 2, 0)))
+    t = Tensor.full((3, 2, 0), 12)
+    assert t.shape == (3, 2, 0)
+    np.testing.assert_equal(t.numpy(), np.full((3, 2, 0), 12))
+
+  def test_reshape(self):
+    t = Tensor.zeros(3, 2, 0)
+    a = t.reshape(7, 0)
+    assert a.shape == (7, 0)
+    np.testing.assert_equal(a.numpy(), np.zeros((7, 0)))
+    with self.assertRaises(AssertionError):
+      # cannot reshape from size 0 to size 1
+      a = t.reshape(())
+
+  def test_expand(self):
+    t = Tensor.full((3, 2, 0), 12).expand((6, 2, 0))
+    assert t.shape == (6, 2, 0)
+    np.testing.assert_equal(t.numpy(), np.full((6, 2, 0), 12))
+
+  def test_pad(self):
+    t = Tensor.rand(3, 2, 0).pad((None, None, (1, 1)), 1)
+    assert t.shape == (3, 2, 2)
+    np.testing.assert_equal(t.numpy(), np.ones((3, 2, 2)))
+
+    if Device.DEFAULT != "TORCH":
+      # torch does not support padding non-zero dim with 0-size. torch.nn.functional.pad(torch.zeros(3,2,0), [0,0,0,4,0,0])
+      t = Tensor.rand(3, 2, 0).pad((None, (1, 1), None), 1)
+      assert t.shape == (3, 4, 0)
+      np.testing.assert_equal(t.numpy(), np.ones((3, 4, 0)))
+
+      t = Tensor.rand(3, 2, 0).pad(((1, 1), None, None), 1)
+      assert t.shape == (5, 2, 0)
+      np.testing.assert_equal(t.numpy(), np.ones((5, 2, 0)))
+
+  def test_shrink_into_zero(self):
+    t = Tensor.rand(3, 4).realize()
+    assert t.shrink((None, (2, 2))).realize().shape == (3, 0)
+    assert t.shrink(((2, 2), None)).realize().shape == (0, 4)
+    assert t.shrink(((2, 2), (2, 2))).realize().shape == (0, 0)
+
+  def test_cat(self):
+    s = Tensor.rand(3, 2, 2)
+    t = Tensor.rand(3, 2, 0).cat(s, dim=2)
+    assert t.shape == (3, 2, 2)
+    np.testing.assert_equal(t.numpy(), s.numpy())
+
+    if Device.DEFAULT != "TORCH":
+      # torch does not support padding non-zero dim with 0-size. torch.nn.functional.pad(torch.zeros(3,2,0), [0,0,0,4,0,0])
+      s = Tensor.rand(3, 4, 0)
+      t = Tensor.rand(3, 2, 0).cat(s, dim=1)
+      assert t.shape == (3, 6, 0)
+      np.testing.assert_equal(t.numpy(), np.zeros((3, 6, 0)))
+
+  def test_elementwise(self):
+    a = Tensor.rand(3, 2, 0)
+    a_exp = a.exp()
+    assert a_exp.shape == (3, 2, 0)
+    np.testing.assert_equal(a_exp.numpy(), np.exp(a.numpy()))
+
+    b = Tensor.rand(3, 2, 0)
+    assert b.shape == (3, 2, 0)
+    ab = a * b
+    assert ab.shape == (3, 2, 0)
+    np.testing.assert_equal(ab.numpy(), a.numpy() * b.numpy())
+
+    mask = (Tensor.rand(3, 2, 0) > 0.5)
+    assert mask.shape == (3, 2, 0)
+    c = mask.where(a, b)
+    assert c.shape == (3, 2, 0)
+    np.testing.assert_equal(c.numpy(), np.where(mask.numpy(), a.numpy(), b.numpy()))
+
+  def test_reduce_over_non_zero(self):
+    a = Tensor.ones(3, 2, 0).sum(axis=1)
+    assert a.shape == (3, 0)
+    np.testing.assert_equal(a.numpy(), np.sum(np.zeros((3, 2, 0)), axis=1))
+
+  def test_reduce_over_zero(self):
+    a = Tensor.ones(3, 2, 0).sum(axis=2)
+    assert a.shape == (3, 2)
+    np.testing.assert_equal(a.numpy(), np.sum(np.zeros((3, 2, 0)), axis=2))
+
+    a = Tensor.ones(3, 2, 0).sum(axis=2, keepdim=True)
+    assert a.shape == (3, 2, 1)
+    np.testing.assert_equal(a.numpy(), np.sum(np.zeros((3, 2, 0)), axis=2, keepdims=True))
+
+  def test_reduce_default(self):
+    np.testing.assert_equal(Tensor([]).max().numpy(), -float("inf"))
+    np.testing.assert_equal(Tensor([]).min().numpy(), float("inf"))
+    np.testing.assert_equal(Tensor([]).sum().numpy(), 0)
+    np.testing.assert_equal(Tensor([]).mean().numpy(), 0)
 
 if __name__ == '__main__':
   unittest.main()

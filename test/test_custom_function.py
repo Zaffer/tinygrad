@@ -8,33 +8,26 @@ from tinygrad.helpers import prod, dtypes
 
 # *** first, we implement the atan2 op at the lowest level ***
 # `atan2_gpu` for GPUBuffers and `atan2_cpu` for CPUBuffers
-from tinygrad.lazy import LazyBuffer, create_lazybuffer
-from tinygrad.ops import ASTRunner, Device
+from tinygrad.lazy import Buffer, create_lazybuffer
+from tinygrad.device import CompiledASTRunner, Device
 from tinygrad.shape.shapetracker import ShapeTracker
-import pytest
-
-pytestmark = pytest.mark.webgpu
 
 # we don't always have GPU support, so the type signature is the abstract CompiledBuffer instead of GPUBuffer
-def atan2_gpu(ret:LazyBuffer, a:LazyBuffer, b:LazyBuffer):
-  assert a.device == "GPU" and b.device == "GPU", "gpu function requires GPUBuffers"
+def atan2_gpu(ret:Buffer, a:Buffer, b:Buffer):
   assert a.dtype == b.dtype and a.dtype == dtypes.float32, "gpu function only supports float32"
-  ret.realized = Device[ret.device].buffer(prod(ret.shape), ret.dtype)
-  ASTRunner("atan2_gpu", """
+  CompiledASTRunner(None, "atan2_gpu", """
     __kernel void atan2_gpu(global float *c, global float *a, global float *b) {
       int idx = get_global_id(0);
       c[idx] = atan2(a[idx], b[idx]);
-    }""", global_size=[prod(ret.shape)]).build(Device[ret.device].compiler, Device[ret.device].runtime).exec([ret.realized, a.realized, b.realized])
-  return ret.realized
+    }""", global_size=[ret.size]).build(Device[ret.device].compiler, Device[ret.device].runtime).exec([ret, a, b])
 
-def atan2_cpu(ret:LazyBuffer, a:LazyBuffer, b:LazyBuffer):
-  return Device[ret.device].from_underlying(np.arctan2(a.realized._buf, b.realized._buf))
+def atan2_cpu(ret:Buffer, a:Buffer, b:Buffer): ret.copyin(np.require(np.arctan2(a._buf, b._buf), requirements='C').data)
 
 # *** second, we write the ATan2 mlop ***
 # NOTE: The derivative of atan2 doesn't need a custom op! https://www.liquisearch.com/atan2/derivative
 # In general, it is also optional to write a backward function, just your backward pass won't work without it
 
-from tinygrad.ops import LazyOp, LoadOps, BinaryOps, UnaryOps
+from tinygrad.ops import LoadOps, BinaryOps
 from tinygrad.lazy import LazyBuffer
 from tinygrad.tensor import Function
 
@@ -42,8 +35,8 @@ class ATan2(Function):
   def forward(self, a:LazyBuffer, b:LazyBuffer) -> LazyBuffer:
     assert prod(a.shape) == prod(b.shape) and a.device == b.device, "shape or device mismatch"
     self.a, self.b = a, b
-    ast = LazyOp(LoadOps.CUSTOM, (a.contiguous(), b.contiguous()), {"GPU": atan2_gpu, "CPU": atan2_cpu}[a.device])
-    return create_lazybuffer(a.device, ShapeTracker.from_shape(a.shape), LoadOps, ast, max(a.dtype, b.dtype))
+    return create_lazybuffer(a.device, ShapeTracker.from_shape(a.shape), max(a.dtype, b.dtype), LoadOps.CUSTOM,
+                             arg={"GPU": atan2_gpu, "CPU": atan2_cpu}[a.device], srcs=(a.contiguous(), b.contiguous()))
   def backward(self, grad_output:LazyBuffer) -> Tuple[Optional[LazyBuffer], Optional[LazyBuffer]]:
     denom = (self.a.e(BinaryOps.MUL, self.a)).e(BinaryOps.ADD, self.b.e(BinaryOps.MUL, self.b))
     return grad_output.e(BinaryOps.MUL, self.b.e(BinaryOps.DIV, denom)) if self.needs_input_grad[0] else None, \
@@ -89,6 +82,7 @@ class TestCustomFunction(unittest.TestCase):
     np.testing.assert_allclose(a.grad.numpy(), ta.grad.numpy(), atol=1e-5)
     np.testing.assert_allclose(b.grad.numpy(), tb.grad.numpy(), atol=1e-5)
 
+  @unittest.skipIf(Device.DEFAULT in ["CPU"], "atan2_cpu not jittable")
   def test_atan2_jit(self):
     # custom ops even work in the JIT!
     from tinygrad.jit import TinyJit

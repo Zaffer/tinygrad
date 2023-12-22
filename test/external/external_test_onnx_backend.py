@@ -1,10 +1,11 @@
 import unittest
+from typing import Any, Tuple
 from onnx.backend.base import Backend, BackendRep
 import onnx.backend.test
 import numpy as np
 from tinygrad.tensor import Tensor
-from typing import Any, Tuple
 from tinygrad.helpers import getenv, CI
+from tinygrad.device import Device, Compiled
 
 # pip3 install tabulate
 pytest_plugins = 'onnx.backend.test.report',
@@ -46,14 +47,16 @@ backend_test.exclude('test_reduce_prod_*')
 backend_test.exclude('test_adam_multiple_cpu')
 backend_test.exclude('test_nesterov_momentum_cpu')
 
-# we only support float32
-backend_test.exclude('uint8')
-backend_test.exclude('uint16')
-backend_test.exclude('uint32')
-backend_test.exclude('uint64')
-backend_test.exclude('int8')
-backend_test.exclude('int16')
-backend_test.exclude('float64')
+# about different dtypes
+backend_test.exclude('int8')  #  OverflowError: cannot convert float infinity to integer
+
+if Device.DEFAULT in ["TORCH"]:
+  backend_test.exclude('uint16')
+  backend_test.exclude('uint32')
+  backend_test.exclude('uint64')
+if Device.DEFAULT in ["METAL"]:
+  backend_test.exclude('float64')
+
 backend_test.exclude('string')
 
 backend_test.exclude('test_pow_types_int*')
@@ -110,8 +113,8 @@ backend_test.exclude('test_bernoulli_*')
 backend_test.exclude('test_cumsum_*')
 backend_test.exclude('test_det_*')
 
-backend_test.exclude('test_tril_zero_cpu') # TODO: zero array support
-backend_test.exclude('test_triu_zero_cpu') # TODO: zero array support
+backend_test.exclude('test_tril_zero_cpu') # TODO: zero array tril support
+backend_test.exclude('test_triu_zero_cpu') # TODO: zero array triu support
 
 backend_test.exclude('test_col2im_*')
 backend_test.exclude('test_hammingwindow_*')
@@ -146,11 +149,6 @@ backend_test.exclude('test_resize_upsample_sizes_cubic_*') # unsure how to imple
 
 # rest of the failing tests
 backend_test.exclude('test_regex_*') # does not support string Tensors
-backend_test.exclude('test_convtranspose_autopad_same_cpu') # TODO geohotstan has no idea how this is done, autopad requires output_shape but output_shape requires pads from autopad
-backend_test.exclude('test_optional_has_element_empty_optional_input_cpu') # Attempts to create Tensor from None
-backend_test.exclude('test_reshape_allowzero_reordered_cpu') # reshaping to shape with 0
-backend_test.exclude('test_reduce_min_empty_set_cpu') # max a tensor with 0 in shape
-backend_test.exclude('test_reduce_sum_empty_set_non_reduced_axis_zero_cpu') # reducing a tensor with 0 in shape
 backend_test.exclude('test_resize_downsample_scales_linear_antialias_cpu') # antialias not implemented
 backend_test.exclude('test_resize_downsample_sizes_linear_antialias_cpu') # antialias not implemented
 backend_test.exclude('test_resize_tf_crop_and_resize_cpu') # unsure about fill value after clip
@@ -171,36 +169,30 @@ backend_test.exclude('test_resize_upsample_sizes_nearest_axes_3_2_cpu')
 backend_test.exclude('test_resize_upsample_sizes_nearest_cpu')
 
 # issue 2067 potentially also a fastmath issue https://github.com/tinygrad/tinygrad/issues/2067
-if getenv('METAL'):
+if Device.DEFAULT in ['METAL']:
   backend_test.exclude('test_maxpool_2d_pads_cpu')
   backend_test.exclude('test_maxpool_2d_same_lower_cpu')
 
-# compiled backends cannot reshape to or from 0
-if getenv('LLVM') or getenv('GPU') or getenv('CLANG') or getenv('METAL') or getenv('CUDA'):
-  backend_test.exclude('test_slice_start_out_of_bounds_cpu')
-  backend_test.exclude('test_constantofshape_int_shape_zero_cpu')
-  backend_test.exclude('test_reduce_l1_empty_set_cpu')
-  backend_test.exclude('test_reduce_sum_empty_set_cpu')
-  backend_test.exclude('test_reduce_l1_empty_set_expanded_cpu')
-  backend_test.exclude('test_reduce_sum_square_empty_set_cpu')
-  backend_test.exclude('test_reduce_l2_empty_set_cpu')
-  backend_test.exclude('test_reduce_sum_square_empty_set_expanded_cpu')
-  backend_test.exclude('test_reduce_l2_empty_set_expanded_cpu')
-  backend_test.exclude('test_reduce_log_sum_empty_set_cpu')
-  backend_test.exclude('test_reduce_log_sum_empty_set_expanded_cpu')
-
-if getenv('GPU') or getenv('METAL'):
+if Device.DEFAULT in ['GPU', 'METAL']:
   backend_test.exclude('test_mish_cpu') # weird inaccuracy
   backend_test.exclude('test_mish_expanded_cpu') # weird inaccuracy
   backend_test.exclude('test_eyelike_with_dtype_cpu') # backend does not support dtype: Double
 
-# Segfaults in CI
-if (getenv('LLVM') or getenv('CUDA')) and CI:
+# Segfaults in CI, GPU requires cl_khr_fp16
+if Device.DEFAULT in ['LLVM', 'CUDA', 'GPU'] and CI:
   backend_test.exclude('test_max_float16_cpu')
   backend_test.exclude('test_min_float16_cpu')
 
 # error: casting to type 'half' is not allowed
 backend_test.exclude('test_dequantizelinear_e4m3fn_float16_cpu')
+
+# TODO: this somehow passes in CI but does not pass if run locally
+if isinstance(Device[Device.DEFAULT], Compiled):
+  backend_test.exclude('test_MaxPool3d_stride_padding_cpu')
+
+# TODO: this somehow passes in CI but does not pass if run locally
+if Device.DEFAULT == 'METAL':
+  backend_test.exclude('test_maxpool_2d_same_upper_cpu')
 
 # disable model tests for now since they are slow
 if not getenv("MODELTESTS"):

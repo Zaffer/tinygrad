@@ -1,9 +1,10 @@
 #!/usr/bin/env python
+# ruff: noqa: E501
 import unittest
 import numpy as np
 from tinygrad.helpers import prod, DEBUG
 from tinygrad.shape.shapetracker import ShapeTracker, View, get_contraction
-from tinygrad.shape.symbolic import Variable
+from tinygrad.shape.symbolic import Variable, NumNode
 from itertools import product
 
 def shapetracker_getitem(st, val):
@@ -77,11 +78,24 @@ class CheckingShapeTracker:
     assert self.st.shape == self.shape
     assert x == y, f"mismatch shapetracker:{x} real:{y}"
 
+@unittest.skip("don't create shapetrackers with views")
 class TestRealIssues(unittest.TestCase):
   def test_reshape_doesnt_multiview(self):
     self.st = ShapeTracker((View.create((256, 256, 2, 2, 2, 2, 2, 256, 8, 2), (0, 8, 0, 4, 0, 0, 2, 16384, 2048, 1), 0, None),))
     self.st.reshape((128, 2, 256, 2, 2, 2, 2, 2, 256, 8, 2))
     assert len(self.st.views) == 1
+
+  def test_reshape_stable_diffusion(self):
+    # regression test for https://github.com/tinygrad/tinygrad/pull/2616
+    st = ShapeTracker((View((2, 1920, 32, 32), (1310720, 1024, 32, 1), 0, ((0, 2), (0, 1280), (0, 32), (0, 32)), False),))
+    st = st.reshape((2, 32, 240, 256))
+    assert len(st.views) == 2
+
+  def test_reshape_trailing_invalid_ones(self):
+    st = ShapeTracker((View(shape=(1, 1, 5), strides=(0, 0, 1), offset=-5, mask=((1, 1), (0, 1), (0, 5)), contiguous=False),))
+    st = st.reshape((5,))
+    assert len(st.views) == 1
+    assert st.views[0].mask == ((0,0),)
 
 class TestRealDoesntSimplify(unittest.TestCase):
   def tearDown(self):
@@ -135,8 +149,8 @@ class TestIndexExpressions2d(unittest.TestCase):
   def setUp(self):
     shapes = [(30, 5), (15, 10), (15, 1), (5, 10), (5, 1)] # Make sure dim0 is a multiple of 5, one of the tests divides this dimension by 5
     offsets = [0, 1, 15, 28, 10000]
-    self.sts = [ShapeTracker((View.create(base_shape, offset=offset),)) for base_shape in shapes for offset in offsets]
-    self.offset = [Variable.num(offset) for base_shape in shapes for offset in offsets]
+    self.sts = [ShapeTracker.from_shape((prod(base_shape)+offset,)).shrink(((offset, offset+prod(base_shape)),)).reshape(base_shape) for base_shape in shapes for offset in offsets]
+    self.offset = [NumNode(offset) for base_shape in shapes for offset in offsets]
     self.shapes = [shape for shape in shapes for offset in offsets]
     self.node_exprs = []
     self.idxs_exprs = []
@@ -226,6 +240,128 @@ class TestIndexExpressions2d(unittest.TestCase):
       self.idxs_exprs.append(lambda idxs, base_shape=base_shape, offset=offset: (idxs[1]*(base_shape[1]*5)+idxs[2])%base_shape[0]*base_shape[1] + (idxs[1]*(base_shape[1]*5)+idxs[2])//base_shape[0] + offset)
       new_st.append(st)
     self.sts = new_st
+
+  def test_reshaping_splitting(self):
+    self.st = CheckingShapeTracker((5,10,5,10))
+    self.st.permute((1, 0, 3, 2))
+    self.st.pad(((0,0), (0,5), (0,0), (0,5)))
+    self.st.reshape((10,2,5,10,2,5))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_reshape_splitting_1(self):
+    self.st = CheckingShapeTracker((1,10,1))
+    self.st.pad(((0,4),(0,0),(1,0)))
+    self.st.reshape((5,5,2,2))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_reshape_combining_1(self):
+    self.st = CheckingShapeTracker((2,1,10))
+    self.st.pad(((2,6), (0,0), (0,0)))
+    self.st.reshape((100,))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_reshape_combining_2(self):
+    self.st = CheckingShapeTracker((1,1,5))
+    self.st.pad(((3,6), (0,0), (0,5)))
+    self.st.reshape((100,))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_reshape_combining_3(self):
+    self.st = CheckingShapeTracker((1,1,4))
+    self.st.pad(((3,6), (0,0), (1,5)))
+    self.st.reshape((100,))
+    assert len(self.st.views) == 1
+    assert self.st.views[0].mask[0] == (31, 35)
+    self.st.assert_same()
+
+  def test_reshape_combining_4(self):
+    # interestingly this one is quite slow
+    self.st = CheckingShapeTracker((1,1,5,5,1,1,5))
+    self.st.pad(((3,6), (0,0), (0,5), (0,0), (3,6), (0,0), (0,5)))
+    self.st.reshape((100,5,100))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_reshape_splitting_combining(self):
+    self.st = CheckingShapeTracker((1,5,5))
+    self.st.pad(((0,4), (0,5), (0,0)))
+    self.st.reshape((10,25))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_reshape_only_1s(self):
+    self.st = CheckingShapeTracker((1, 1, 1, 4, 1, 3, 5, 1))
+    self.st.pad(((0,4), (0,0), (0,0), (1,1), (0,0), (0,0), (0,0), (0,0)))
+    self.st.reshape((5, 6, 3, 5))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+    self.st.reshape((1, 1, 5, 6, 3, 5, 1, 1))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+    self.st.reshape((1, 5, 6, 1, 3, 1, 5, 1))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_zero_mask_1(self):
+    self.st = CheckingShapeTracker((1, 3, 2))
+    self.st.pad(((0,0), (0,3), (0,0)))
+    self.st.shrink(((0,1), (3,6), (0,2)))
+    self.st.reshape((3,2))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+    self.st.reshape((1, 3, 1, 2, 1))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_zero_mask_2(self):
+    self.st = CheckingShapeTracker((1, 3, 2))
+    self.st.pad(((0,2), (0,3), (0,0)))
+    self.st.shrink(((2,3), (3,6), (0,2)))
+    self.st.reshape((3,2))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+    self.st.reshape((1, 3, 1, 2, 1))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_expanded_reshaped(self):
+    self.st = CheckingShapeTracker((1, 3, 2, 1))
+    self.st.expand((5, 3, 2, 2))
+    self.st.pad(((0,0), (0,3), (0,0), (0, 0)))
+    self.st.reshape((5, 2, 3, 2, 2))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
+
+  def test_splitting_big(self):
+    self.st = CheckingShapeTracker((1, 5, 1, 15, 1))
+    self.st.pad(((0,0), (0,5), (0,0), (0,15), (0,0)))
+    self.st.reshape((10, 1, 30))
+    self.st.permute((2,1,0))
+    self.st.reshape((2,3,5,2,5))
+    assert len(self.st.views) == 1
+    v = self.st.views[-1]
+    assert v.strides == (0, 5, 1, 0, 15) and v.mask == ((0, 1), (0, 3), (0, 5), (0, 1), (0, 5))
+    self.st.assert_same()
+
+  def test_combining_big(self):
+    self.st = CheckingShapeTracker((1,3,1,5,3,1))
+    self.st.pad(((0,0),(2,2),(0,0),(0,0),(0,0),(0,0)))
+    self.st.reshape((1,1,1,105,1,1))
+    assert len(self.st.views) == 1
+    v = self.st.views[-1]
+    assert v.strides == (0, 0, 0, 1, 0, 0) and v.mask == ((0, 1), (0, 1), (0, 1), (30, 75), (0, 1), (0, 1)) and v.offset == -30
+    self.st.assert_same()
+
+  def test_pad_reshape(self):
+    self.st = CheckingShapeTracker((4,))
+    self.st.pad(((2,2),))
+    self.st.reshape((4,2))
+    assert len(self.st.views) == 1
+    self.st.assert_same()
 
 class TestSimplifyingShapeTracker(unittest.TestCase):
   def setUp(self):
@@ -406,7 +542,6 @@ class TestShapeTrackerFuzzFailures(unittest.TestCase):
     self.st = CheckingShapeTracker((3,3,3))
   def tearDown(self):
     self.st.assert_same()
-  @unittest.skip("simplify doesn't work in this case")
   def test_case_1(self):
     self.st.shrink(((1, 2), (1, 3), (1, 3)))
     self.st.reshape((1, 4))
@@ -599,19 +734,19 @@ class TestGetContraction(unittest.TestCase):
     self.assertEqual(r, [[0], [1, 2], [3]])
 
     r = get_contraction((1,2,3,1,4), (1,2,3,4))
-    self.assertEqual(r, [[0], [1], [2], [3, 4]])
+    self.assertEqual(r, [[], [0, 1], [2], [3, 4]])
 
     r = get_contraction((1,2,3,1,4,1,1), (2,3,4))
     self.assertEqual(r, [[0, 1], [2], [3, 4, 5, 6]])
 
     r = get_contraction((1,2,3,4), (1,2,3*4))
-    self.assertEqual(r, [[0], [1], [2, 3]])
+    self.assertEqual(r, [[], [0, 1], [2, 3]])
 
     r = get_contraction((1,2,3,4), (2,1,3,4))
     self.assertEqual(r, [[0, 1], [], [2], [3]])
 
     r = get_contraction((1,2,3,4), (1,1,2*3*4,1))
-    self.assertEqual(r, [[0], [], [1,2,3], []])
+    self.assertEqual(r, [[], [], [0,1,2,3], []])
 
     r = get_contraction((2,1,3,4), (1,2,3,4))
     self.assertEqual(r, [[], [0], [1, 2], [3]])
@@ -626,7 +761,7 @@ class TestGetContraction(unittest.TestCase):
     self.assertEqual(r, [[0, 1], [2], [3, 4, 5, 6]])
 
     r = get_contraction((1,2,3,4), (1,2,3,4,1))
-    self.assertEqual(r, [[0], [1], [2], [3], []])
+    self.assertEqual(r, [[], [0, 1], [2], [3], []])
 
     r = get_contraction((14,1,384,14,1,1,1,1), (1,14,384,14))
     self.assertEqual(r, [[], [0], [1,2], [3,4,5,6,7]])
@@ -642,22 +777,55 @@ class TestGetContraction(unittest.TestCase):
 
   def test_contraction_ones(self):
     r = get_contraction((1,), (1,1,1))
-    self.assertEqual(r, [[0], [], []])
+    self.assertEqual(r, [[], [], [0]])
 
     r = get_contraction((1,1), (1,1,1))
-    self.assertEqual(r, [[0], [1], []])
+    self.assertEqual(r, [[], [], [0, 1]])
 
     r = get_contraction((1,1,1,1), (1,))
     self.assertEqual(r, [[0,1,2,3]])
 
     r = get_contraction((1,1,1,1), (1,1))
-    self.assertEqual(r, [[0], [1,2,3]])
+    self.assertEqual(r, [[], [0,1,2,3]])
 
     r = get_contraction((1,1,1,1), (1,1,1))
-    self.assertEqual(r, [[0], [1], [2,3]])
+    self.assertEqual(r, [[], [], [0,1,2,3]])
 
     r = get_contraction((1,1,1,1), (1,1,1,1))
-    self.assertEqual(r, [[0], [1], [2], [3]])
+    self.assertEqual(r, [[], [], [], [0,1,2,3]])
+
+class TestShapeTrackerSize(unittest.TestCase):
+  def test_simple_size(self):
+    st = ShapeTracker.from_shape((100, 100))
+    self.assertEqual(st.size(), 100*100)
+
+  def test_expand_size(self):
+    st = ShapeTracker.from_shape((100, 100))
+    st = st.reshape((100, 100, 1))
+    st = st.expand((100, 100, 100))
+    self.assertEqual(st.size(), 100*100)
+
+  def test_expand_size_flatten(self):
+    st = ShapeTracker.from_shape((100, 100))
+    st = st.reshape((100, 100, 1))
+    st = st.expand((100, 100, 100))
+    st = st.reshape((100*100*100,))
+    self.assertEqual(st.size(), 100*100)
+
+  def test_shrink_size_axis_0(self):
+    st = ShapeTracker.from_shape((100, 100))
+    st = st.shrink(((0, 50), (0, 100)))
+    self.assertEqual(st.size(), 50*100)
+
+  def test_shrink_size_axis_0_variable(self):
+    st = ShapeTracker.from_shape((100, 100))
+    st = st.shrink(((0, Variable("a", 0, 50)), (0, 100)))
+    self.assertEqual(st.size(), 50*100)
+
+  def test_shrink_size_axis_1(self):
+    st = ShapeTracker.from_shape((100, 100))
+    st = st.shrink(((0, 100), (0, 50)))
+    self.assertEqual(st.size(), 9950)    # careful here
 
 if __name__ == '__main__':
   unittest.main()
