@@ -7,20 +7,22 @@ from typing import List, Optional
 from tinygrad.tensor import Tensor
 from tinygrad.ops import LoadOps
 from tinygrad.device import Device, Compiled
-from tinygrad.helpers import DEBUG, dtypes
+from tinygrad.helpers import DEBUG, GRAPH
 from tinygrad.codegen.linearizer import Linearizer
-from tinygrad.graph import print_tree, realized_lazybuffer
-from tinygrad import nn
+from tinygrad.features.graph import print_tree, realized_lazybuffer
+from tinygrad.realize import create_schedule
+from tinygrad import nn, dtypes
 
 def check_schedule(t:Tensor, allowed:int, to_prerealize:Optional[List[Tensor]]=None, filter_loadops=True):
   seen = set()
   if to_prerealize:
     for pre in to_prerealize:
-      for s in pre.lazydata.schedule(seen.copy()):
-        realized_lazybuffer(s.out, 0)
+      for s in create_schedule([pre.lazydata], seen.copy()):
+        if GRAPH: realized_lazybuffer(s.out, 0)
         seen.add(s.out)
-  sched = t.lazydata.schedule(seen)
-  for i,s in enumerate(sched): realized_lazybuffer(s.out, i+1)
+  sched = create_schedule([t.lazydata], seen)
+  if GRAPH:
+    for i,s in enumerate(sched): realized_lazybuffer(s.out, i+1)
   if filter_loadops: sched = [s for s in sched if s.ast.op not in LoadOps]
   if len(sched) != allowed: print(f"SCHEDULE ISSUE, expecting {allowed} got {len(sched)}")
   if len(sched) != allowed or DEBUG >= 3:
@@ -348,7 +350,7 @@ class TestSchedule(unittest.TestCase):
 
   def test_double_from(self):
     x = Tensor([1,2,3,4])
-    out = x.to('cpu')
+    out = x.to('ext')
     check_schedule(out, 0, filter_loadops=False)
 
   def test_pow_const_tensor_simplified(self):

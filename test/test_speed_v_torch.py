@@ -9,12 +9,11 @@ torch.set_num_threads(1)
 import time
 import numpy as np
 np.set_printoptions(linewidth=160)
-from tinygrad import Device
-from tinygrad.helpers import GlobalCounters
+from tinygrad import Device, GlobalCounters
 from tinygrad.tensor import Tensor
 from tinygrad.nn import Conv2d
 from tinygrad.helpers import colored, getenv, CI
-from tinygrad.jit import TinyJit
+from tinygrad.features.jit import TinyJit
 
 IN_CHANS = [int(x) for x in getenv("IN_CHANS", "4,16,64").split(",")]
 

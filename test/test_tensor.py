@@ -2,9 +2,13 @@ import numpy as np
 import torch
 import unittest, copy
 import mmap
-from tinygrad.tensor import Tensor, Device
-from tinygrad.helpers import dtypes, temp
+from tinygrad import Tensor, Device, dtypes
+from tinygrad.helpers import temp, CI
 from extra.gradcheck import numerical_jacobian, jacobian, gradcheck
+from hypothesis import given, settings, strategies as strat
+
+settings.register_profile("my_profile", max_examples=200, deadline=None)
+settings.load_profile("my_profile")
 
 x_init = np.random.randn(1,3).astype(np.float32)
 U_init = np.random.randn(3,3).astype(np.float32)
@@ -285,7 +289,7 @@ class TestTinygrad(unittest.TestCase):
     np.testing.assert_allclose(x.numpy(), np.ones((3,3,3)))
 
   def test_copy_from_disk(self):
-    t = Tensor.randn(30, device="CPU").to(f"disk:{temp('test_copy_from_disk')}")
+    t = Tensor.randn(30).to(f"disk:{temp('test_copy_from_disk')}")
     a = t[10:20]
     dev = a.to(Device.DEFAULT)
     np.testing.assert_allclose(a.numpy(), dev.numpy())
@@ -302,6 +306,38 @@ class TestTinygrad(unittest.TestCase):
     assert not ua_arr.flags.aligned
     # force device copy - to() is opt'd away - Tensor(dev)/1 is ignored
     np.testing.assert_allclose(ua_arr, (Tensor(ua_arr)/Tensor(1)).numpy())
+
+  def test_item_to_tensor_to_item(self):
+    for a in [0, 1, 2, 3, -1, -100, 100, -101.1, 2.345, 100.1, True, False]:
+      item = Tensor(a).item()
+      assert type(item) == type(a), a
+      np.testing.assert_allclose(item, a), a
+      buffered_item = Tensor([a]).item()
+      assert type(buffered_item) == type(a), a
+      np.testing.assert_allclose(buffered_item, a), a
+      reshaped_item = Tensor([a]).reshape((1, 1, 1, 1, 1)).item()
+      assert type(reshaped_item) == type(a), a
+      np.testing.assert_allclose(reshaped_item, a), a
+
+@unittest.skipIf(CI and Device.DEFAULT in {"GPU", "CUDA", "METAL"}, "no GPU CI")
+class TestMoveTensor(unittest.TestCase):
+  d0, d1 = f"{Device.DEFAULT}:0", f"{Device.DEFAULT}:1"
+  @given(strat.sampled_from([d0, d1]), strat.sampled_from([d0, d1]),
+         strat.sampled_from([dtypes.float16, dtypes.float32]), strat.sampled_from([True, False, None]))
+  def test_to_preserves(self, src, dest, dtype, requires_grad):
+    s = Tensor([1, 2, 3], device=src, dtype=dtype, requires_grad=requires_grad)
+    t = s.to(dest)
+    np.testing.assert_equal(s.numpy(), t.numpy())
+    assert s.dtype == t.dtype
+    assert s.requires_grad == t.requires_grad
+
+  @given(strat.sampled_from([dtypes.float16, dtypes.float32]), strat.sampled_from([True, False, None]))
+  def test_shard_preserves(self, dtype, requires_grad):
+    s = Tensor([1, 2, 3], dtype=dtype, requires_grad=requires_grad)
+    t = s.shard((f"{Device.DEFAULT}:0", f"{Device.DEFAULT}:1"))
+    np.testing.assert_equal(s.numpy(), t.numpy())
+    assert s.dtype == t.dtype
+    assert s.requires_grad == t.requires_grad
 
 class TestZeroShapeTensor(unittest.TestCase):
   def test_shape_stride(self):
@@ -358,15 +394,13 @@ class TestZeroShapeTensor(unittest.TestCase):
     assert t.shape == (3, 2, 2)
     np.testing.assert_equal(t.numpy(), np.ones((3, 2, 2)))
 
-    if Device.DEFAULT != "TORCH":
-      # torch does not support padding non-zero dim with 0-size. torch.nn.functional.pad(torch.zeros(3,2,0), [0,0,0,4,0,0])
-      t = Tensor.rand(3, 2, 0).pad((None, (1, 1), None), 1)
-      assert t.shape == (3, 4, 0)
-      np.testing.assert_equal(t.numpy(), np.ones((3, 4, 0)))
+    t = Tensor.rand(3, 2, 0).pad((None, (1, 1), None), 1)
+    assert t.shape == (3, 4, 0)
+    np.testing.assert_equal(t.numpy(), np.ones((3, 4, 0)))
 
-      t = Tensor.rand(3, 2, 0).pad(((1, 1), None, None), 1)
-      assert t.shape == (5, 2, 0)
-      np.testing.assert_equal(t.numpy(), np.ones((5, 2, 0)))
+    t = Tensor.rand(3, 2, 0).pad(((1, 1), None, None), 1)
+    assert t.shape == (5, 2, 0)
+    np.testing.assert_equal(t.numpy(), np.ones((5, 2, 0)))
 
   def test_shrink_into_zero(self):
     t = Tensor.rand(3, 4).realize()
@@ -380,12 +414,10 @@ class TestZeroShapeTensor(unittest.TestCase):
     assert t.shape == (3, 2, 2)
     np.testing.assert_equal(t.numpy(), s.numpy())
 
-    if Device.DEFAULT != "TORCH":
-      # torch does not support padding non-zero dim with 0-size. torch.nn.functional.pad(torch.zeros(3,2,0), [0,0,0,4,0,0])
-      s = Tensor.rand(3, 4, 0)
-      t = Tensor.rand(3, 2, 0).cat(s, dim=1)
-      assert t.shape == (3, 6, 0)
-      np.testing.assert_equal(t.numpy(), np.zeros((3, 6, 0)))
+    s = Tensor.rand(3, 4, 0)
+    t = Tensor.rand(3, 2, 0).cat(s, dim=1)
+    assert t.shape == (3, 6, 0)
+    np.testing.assert_equal(t.numpy(), np.zeros((3, 6, 0)))
 
   def test_elementwise(self):
     a = Tensor.rand(3, 2, 0)
@@ -423,7 +455,14 @@ class TestZeroShapeTensor(unittest.TestCase):
     np.testing.assert_equal(Tensor([]).max().numpy(), -float("inf"))
     np.testing.assert_equal(Tensor([]).min().numpy(), float("inf"))
     np.testing.assert_equal(Tensor([]).sum().numpy(), 0)
-    np.testing.assert_equal(Tensor([]).mean().numpy(), 0)
+    np.testing.assert_equal(Tensor([]).mean().numpy(), float("nan"))
+
+class TestTensorCreationDevice(unittest.TestCase):
+  # test auxiliary tensors are created on the same device
+  def test_one_hot(self):
+    y = Tensor([1, 2, 3]).to("CLANG")
+    x = y.one_hot(10)
+    x.realize()
 
 if __name__ == '__main__':
   unittest.main()
