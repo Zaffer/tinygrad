@@ -12,7 +12,7 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = ">=3.10"
 numpy = "*"
 tqdm = "*"
 pyobjc-framework-Metal = { version = "*", markers = "sys_platform == 'darwin'" }
@@ -52,10 +52,19 @@ librosa = "*"
 networkx = "*"
 hypothesis = "*"
 
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.2"
+matplotlib = "^3.8.3"
+seaborn = "^0.13.2"
+plotly = "^5.19.0"
+nbformat = "^5.9.2"
+ipython = "^8.22.1"
+
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
+preview = true # Enable preview features.
 line-length = 119
 per-file-ignores = {"__init__.py" = ["F401"]}
