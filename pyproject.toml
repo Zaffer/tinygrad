@@ -1,62 +1,56 @@
 [tool.poetry]
 name = "tinygrad"
-version = "0.7.0"
-description = "You like pytorch? You like micrograd? You love tinygrad! ❤️"
-authors = ["George Hotz <https://github.com/geohot>"]
+version = "0.8.0"
+description = "You like pytorch? You like micrograd? You love tinygrad! <3"
+authors = ["George Hotz"]
 license = "MIT"
 readme = "README.md"
-packages = [
-    { include = "tinygrad" },
-    { include = "tinygrad/codegen" },
-    { include = "tinygrad/nn" },
-    { include = "tinygrad/renderer" },
-    { include = "tinygrad/runtime" },
-    { include = "tinygrad/shape" },
-    { include = "tinygrad/features" },
+homepage = "https://github.com/geohot/tinygrad"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License"
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.8,<4.0"
+python = "^3.8"
 numpy = "*"
-requests = "*"
 tqdm = "*"
-networkx = "*"
-pyopencl = "*"
-"pyobjc-framework-Metal" = { version = "*", platform = "darwin" }
-"pyobjc-framework-Cocoa" = { version = "*", platform = "darwin" }
-"pyobjc-framework-libdispatch" = { version = "*", platform = "darwin" }
+pyobjc-framework-Metal = { version = "*", markers = "sys_platform == 'darwin'" }
+pyobjc-framework-libdispatch = { version = "*", markers = "sys_platform == 'darwin'" }
+llvmlite = { version = "*", optional = true }
+unicorn = { version = "*", optional = true }
+# triton-nightly = { version = ">=2.1.0", optional = true }
 
 [tool.poetry.extras]
 llvm = ["llvmlite"]
-cuda = ["pycuda"]
 arm = ["unicorn"]
-# triton = ["triton-nightly>=2.1.0.dev20231014192330", "pycuda"]
-webgpu = ["wgpu"]
-linting = [
-    "flake8",
-    "pylint",
-    "mypy",
-    "typing-extensions",
-    "pre-commit",
-    "ruff",
-    "types-tqdm",
-]
-testing = [
-    "torch",
-    "pillow",
-    "pytest",
-    "pytest-xdist",
-    "onnx",
-    "onnx2torch",
-    "opencv-python",
-    "tabulate",
-    "safetensors",
-    "cloudpickle",
-    "transformers",
-    "sentencepiece",
-    "tiktoken",
-    "librosa",
-]
+triton = ["triton-nightly"]
+cuda = ["pycuda"]
+
+[tool.poetry.group.linting.dependencies]
+pylint = "*"
+mypy = "*"
+typing-extensions = "*"
+pre-commit = "*"
+ruff = "*"
+types-tqdm = "*"
+
+[tool.poetry.group.testing.dependencies]
+torch = "*"
+pillow = "*"
+pytest = "*"
+pytest-xdist = "*"
+onnx = "1.15.0"
+onnx2torch = "*"
+opencv-python = "*"
+tabulate = "*"
+safetensors = "*"
+transformers = "*"
+sentencepiece = "*"
+tiktoken = "*"
+librosa = "*"
+networkx = "*"
+hypothesis = "*"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
