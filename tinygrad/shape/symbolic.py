@@ -215,12 +215,9 @@ class SumNode(RedNode):
   def __mul__(self, b: Union[Node, int]): return Node.sum([x*b for x in self.nodes]) # distribute mul into sum
   @functools.lru_cache(maxsize=None)  # pylint: disable=method-cache-max-size-none
   def __floordiv__(self, b: Union[Node, int], factoring_allowed=True):
+    if self == b: return NumNode(1)
     fully_divided: List[Node] = []
     rest: List[Node] = []
-    if isinstance(b, SumNode):
-      nu_num = sum(node.b for node in self.flat_components if node.__class__ is NumNode)
-      de_num = sum(node.b for node in b.flat_components if node.__class__ is NumNode)
-      if nu_num > 0 and de_num and (d:=nu_num//de_num) > 0: return NumNode(d) + (self-b*d) // b
     if isinstance(b, Node):
       for x in self.flat_components:
         if x % b == 0: fully_divided.append(x // b)
@@ -229,7 +226,6 @@ class SumNode(RedNode):
       return Node.__floordiv__(self, b, False)
     if b == 1: return self
     if not factoring_allowed: return Node.__floordiv__(self, b, factoring_allowed)
-    fully_divided, rest = [], []
     _gcd = b
     divisor = 1
     for x in self.flat_components:
@@ -251,16 +247,10 @@ class SumNode(RedNode):
 
   @functools.lru_cache(maxsize=None)  # pylint: disable=method-cache-max-size-none
   def __mod__(self, b: Union[Node, int]):
-    if isinstance(b, SumNode):
-      nu_num = sum(node.b for node in self.flat_components if node.__class__ is NumNode)
-      de_num = sum(node.b for node in b.flat_components if node.__class__ is NumNode)
-      if nu_num > 0 and de_num and (d:=nu_num//de_num) > 0: return (self-b*d) % b
+    if self == b: return NumNode(0)
     if isinstance(b, Node) and (b - self).min > 0: return self # b - self simplifies the node
-    new_nodes: List[Node] = []
-    for x in self.nodes:
-      if x.__class__ in (NumNode, MulNode): new_nodes.append(x%b) # might simplify
-      else: new_nodes.append(x)
-    return Node.__mod__(Node.sum(new_nodes), b)
+    new_sum = Node.sum([node%b if node.__class__ in (NumNode, MulNode) else node for node in self.nodes])
+    return Node.__mod__(new_sum, b)
 
   def __lt__(self, b:Union[Node,int]):
     lhs: Node = self
