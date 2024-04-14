@@ -24,13 +24,16 @@ class Cast(Function):
 
 # ************* unary ops *************
 
-class Zero(Function):
-  def forward(self, x:LazyBuffer) -> LazyBuffer: return x.const(0)
-  def backward(self, grad_output:LazyBuffer) -> LazyBuffer: return grad_output.const(0)
-
 class Neg(Function):
   def forward(self, x:LazyBuffer) -> LazyBuffer: return x.e(UnaryOps.NEG)
   def backward(self, grad_output:LazyBuffer) -> LazyBuffer: return grad_output.e(UnaryOps.NEG)
+
+class Reciprocal(Function):
+  def forward(self, x:LazyBuffer) -> LazyBuffer:
+    self.ret = x.const(1).e(BinaryOps.DIV, x)
+    return self.ret
+  def backward(self, grad_output:LazyBuffer) -> LazyBuffer:
+    return grad_output.e(UnaryOps.NEG).e(BinaryOps.MUL, self.ret).e(BinaryOps.MUL, self.ret)
 
 class Sin(Function):
   def forward(self, x:LazyBuffer) -> LazyBuffer:
@@ -142,14 +145,14 @@ class Where(Function):
 # ************* reduce ops *************
 
 class Sum(Function):
-  def forward(self, x:LazyBuffer, axis:Tuple[int, ...]) -> LazyBuffer:
+  def forward(self, x:LazyBuffer, axis:Tuple[int, ...], acc_dtype:Optional[DType]=None) -> LazyBuffer:
     self.input_shape = x.shape
-    return x.r(ReduceOps.SUM, axis)
+    return x.r(ReduceOps.SUM, axis, acc_dtype)
 
   def backward(self, grad_output:LazyBuffer) -> LazyBuffer: return grad_output.expand(self.input_shape)
 
 class Max(Function):
-  def forward(self, x:LazyBuffer, axis:Tuple[int, ...]) -> LazyBuffer:
+  def forward(self, x:LazyBuffer, axis:Tuple[int, ...], acc_dtype:Optional[DType]=None) -> LazyBuffer:
     self.x, self.ret, self.axis = x, x.r(ReduceOps.MAX, axis), axis
     return self.ret
 
