@@ -1,6 +1,6 @@
 __pycache__
 .venv/
-.vscode
+# .vscode
 .DS_Store
 notebooks
 .*.swp
@@ -39,7 +39,7 @@ examples/**/*.safetensors
 node_modules
 package.json
 package-lock.json
-temp
+# temp
 *.csv
 .coverage
 coverage.xml
