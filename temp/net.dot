@@ -1,0 +1,24 @@
+strict digraph  {
+1 [color=black, fillcolor="#80ff8080", label="(10,)\n(1,)", style="filled,dashed"];
+2 [color=black, fillcolor="#FFA0A080", label="{(10, 10)}
+(10, 1)
+int
+ReduceOps.SUM
+CONST0 1
+arange", style="filled,dashed"];
+0 [color=black, fillcolor="#c0c0c0", label="(10,)
+int
+BinaryOps.ADD
+CONST1 -1
+arange
+K:1", style="filled,bold"];
+5 [color=black, fillcolor="#FFFFa0", label="(10,)
+int
+MetaOps.COPY
+CLANG
+numpy
+K:2", shape=box, style="filled,bold"];
+1 -> 0  [color="#a0a0a0"];
+2 -> 1  [color="#00000060"];
+0 -> 5  [color="#a0a0a0"];
+}
