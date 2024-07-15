@@ -1,0 +1,32 @@
+strict digraph  {
+0 [fillcolor="#ffe0b0", label="DEFINE_GLOBAL (0, True)\nptr.dtypes.int", style=filled];
+1 [fillcolor="#ffe0b0", label="DEFINE_GLOBAL (1, False)\nptr.dtypes.int", style=filled];
+2 [fillcolor="#ffe0b0", label="DEFINE_GLOBAL (2, False)\nptr.dtypes.int", style=filled];
+3 [fillcolor="#e0e0e0", label="CONST 0\ndtypes.int", style=filled];
+4 [fillcolor="#e0e0e0", label="CONST 2\ndtypes.int", style=filled];
+5 [fillcolor="#f0ffe0", label="DEFINE_ACC (0,)\ndtypes.int", style=filled];
+6 [fillcolor="#c8a0e0", label="RANGE (0, True)\ndtypes.int", style=filled];
+7 [fillcolor="#ffc0c0", label="LOAD\ndtypes.int", style=filled];
+8 [fillcolor="#ffc0c0", label="LOAD\ndtypes.int", style=filled];
+9 [fillcolor="#ffffc0", label="ALU BinaryOps.MUL\ndtypes.int", style=filled];
+10 [fillcolor="#ffffc0", label="ALU BinaryOps.ADD\ndtypes.int", style=filled];
+11 [fillcolor="#e0ffc0", label="PHI\ndtypes.int", style=filled];
+13 [fillcolor="#c0ffc0", label="STORE\nNone", style=filled];
+0 -> 13;
+1 -> 7;
+2 -> 8;
+3 -> 5;
+3 -> 6;
+3 -> 13;
+4 -> 6;
+5 -> 10;
+5 -> 11;
+6 -> 5;
+6 -> 7;
+6 -> 8;
+7 -> 9;
+8 -> 9;
+9 -> 10;
+10 -> 11;
+11 -> 13;
+}
