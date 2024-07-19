@@ -3,7 +3,7 @@ from typing import Union, Tuple, Any, List, Dict, Callable
 import functools, hashlib, math, operator, ctypes, struct
 from enum import Enum, auto
 from dataclasses import dataclass
-from tinygrad.helpers import prod, dedup
+from tinygrad.helpers import prod, dedup, pretty_print
 from tinygrad.dtype import dtypes, DType, ConstType
 from tinygrad.shape.symbolic import Variable, sint
 from tinygrad.shape.shapetracker import ShapeTracker
@@ -27,7 +27,7 @@ class ReduceOps(Enum):
   SUM = auto(); MAX = auto(); WMMA = auto() # noqa: E702
 class BufferOps(Enum): LOAD = auto(); CONST = auto(); STORE = auto() # noqa: E702
 class MetaOps(Enum):
-  EMPTY = auto(); CONST = auto(); COPY = auto(); CONTIGUOUS = auto(); CUSTOM = auto(); ASSIGN = auto(); VIEW = auto(); SINK = auto() # noqa: E702
+  EMPTY = auto(); CONST = auto(); COPY = auto(); CONTIGUOUS = auto(); CUSTOM = auto(); ASSIGN = auto(); VIEW = auto(); KERNEL = auto() # noqa: E702
 Op = Union[UnaryOps, BinaryOps, ReduceOps, MetaOps, TernaryOps, BufferOps]
 
 # do not preserve f(0) = 0
@@ -62,7 +62,7 @@ class LazyOp:
     ret = context[key] = all(a.cached_compare(b, context) for a,b in zip(self.src, x.src))
     return ret
   def __eq__(self, x): return self.cached_compare(x, context={})
-  def __repr__(self): return f"LazyOp(op={self.op}, src={self.src}, arg={self.arg})"
+  def __repr__(self:LazyOp): return pretty_print(self, lambda x: f'LazyOp({x.op}, arg={x.arg}, src=(%s))')
   @functools.cached_property
   def dtype(self) -> DType:
     if self.op in BufferOps: return self.arg.dtype
@@ -90,7 +90,12 @@ class LazyOp:
   def __add__(self, x:LazyOp): return LazyOp(BinaryOps.ADD, (self, x))
   def __sub__(self, x:LazyOp): return LazyOp(BinaryOps.ADD, (self, -x))
   def __mul__(self, x:LazyOp): return LazyOp(BinaryOps.MUL, (self, x))
+  def ne(self, x:LazyOp): return LazyOp(BinaryOps.CMPNE, (self, x))
+  def eq(self, x:LazyOp): return -self.ne(x)
   def __neg__(self): return LazyOp(UnaryOps.NEG, (self,))
+  @staticmethod
+  def const(val, dtype:DType, shape:Tuple[sint, ...]):
+    return LazyOp(BufferOps.CONST, (), ConstBuffer(val, dtype, ShapeTracker.from_shape(()).reshape((1,)*len(shape)).expand(shape)))
 
 # **************** independent FlopCounter ****************
 
@@ -130,7 +135,7 @@ def hook_overflow(dv, fxn):
     except OverflowError: return dv
   return wfxn
 
-python_alu = {
+python_alu: Dict[Op, Callable]  = {
   UnaryOps.LOG2: lambda x: math.log2(x) if x > 0 else -math.inf if x == 0 else math.nan,
   UnaryOps.EXP2: hook_overflow(math.inf, lambda x: 2**x),
   UnaryOps.SQRT: lambda x: math.sqrt(x) if x >= 0 else math.nan,
@@ -157,14 +162,16 @@ truncate: Dict[DType, Callable] = {dtypes.bool: bool,
   dtypes.float16: truncate_fp16, dtypes.float32: lambda x: ctypes.c_float(x).value, dtypes.float64: lambda x: ctypes.c_double(x).value,
   dtypes.uint8: lambda x: ctypes.c_uint8(x).value, dtypes.uint16: lambda x: ctypes.c_uint16(x).value,
   dtypes.uint32: lambda x: ctypes.c_uint32(x).value, dtypes.uint64: lambda x: ctypes.c_uint64(x).value,
-  dtypes.int8: lambda x: ctypes.c_int8(x).value, dtypes.int16: lambda x: ctypes.c_int16(x).value,
-  dtypes.int32: lambda x: ctypes.c_int32(x).value, dtypes.int64: lambda x: ctypes.c_int64(x).value, dtypes.bigint: lambda x: x }
+  dtypes.int8: lambda x: ctypes.c_int8(x).value, dtypes.int16: lambda x: ctypes.c_int16(x).value, dtypes.int32: lambda x: ctypes.c_int32(x).value \
+      if isinstance(x,int) else x, dtypes.int64: lambda x: ctypes.c_int64(x).value, dtypes.bigint: lambda x: x }
 
 def exec_alu(op:Op, dtype:DType, operands): return truncate.get(dtype, lambda x: x)(python_alu[op](*operands))
 
+def reduce_st(st:ShapeTracker, axis:Tuple[int, ...]) -> Tuple[sint, ...]: return tuple(1 if i in axis else s for i,s in enumerate(st.shape))
+
 # the living definition of LazyOps
 def verify_lazyop(ast:LazyOp) -> Dict[LazyOp, ShapeTracker]:
-  assert ast.op is MetaOps.SINK, "must be SINK"
+  assert ast.op is MetaOps.KERNEL, "must be SINK"
   sts: Dict[LazyOp, ShapeTracker] = {}
   def dfs(op:LazyOp, st:ShapeTracker):
     if op in sts: return
@@ -177,7 +184,7 @@ def verify_lazyop(ast:LazyOp) -> Dict[LazyOp, ShapeTracker]:
     if op.op in ReduceOps:
       axis = op.arg[-1] if op.op is ReduceOps.WMMA else op.arg
       assert isinstance(axis, tuple) and all(isinstance(i, int) for i in axis), f"reduceop must have axis {op.arg}"
-      st = ShapeTracker.from_shape(tuple(1 if i in axis else s for i,s in enumerate(sts[op.src[0]].shape)))
+      st = ShapeTracker.from_shape(reduce_st(sts[op.src[0]], axis))
     else:
       # movementops are pushed to the edges with LOAD
       if op.op in BufferOps: st = op.arg.st

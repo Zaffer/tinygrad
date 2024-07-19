@@ -75,6 +75,7 @@ class IndependentLowerer:
     # NOTE: assumes the shape is <global dims> <local dims> <group_for_reduces> <reduces> <upcasts/unrolls>
     full_shape = ast.full_shape
     first_upcasted = len(full_shape)-ki.upcasted
+    # if there's no reduce, this is first_upcasted
     first_reduce = [x!=y for x,y in zip(ast.src[0].arg.st.shape[:first_upcasted]+(0,), full_shape[:first_upcasted]+(1,))].index(True)
     local_loads = [x for x in ast.lazyops if x.op is BufferOps.LOAD and x.arg.idx == -1]
     # NOTE: this is taking the first one...there may be subtlelies here with multireduces
@@ -98,7 +99,7 @@ class IndependentLowerer:
     # upcast loops
     for i,g in enumerate(full_shape[first_upcasted:], start=first_upcasted):
       assert isinstance(g, int), "needs to be int to upcast/unroll"
-      self.idxs.append(UOp(UOps.EXPAND, dtypes.bigint, tuple(UOp.const(dtypes.bigint, j) for j in range(0, g)), i))
+      self.idxs.append(UOp(UOps.EXPAND, dtypes.bigint, tuple(UOp.const(dtypes.bigint, j) for j in range(0, g)), ((i,g),)))
 
     # late indexes (group for reduce)
     self.ridxs = self.idxs[:]
@@ -138,7 +139,7 @@ class IndependentLowerer:
       return UOp(UOps.STORE, None, (buf, idx, self.to_uop(x.src[0])) + ((valid,) if has_valid else ()))
 
     in_uops = tuple(self.to_uop(y) for y in x.src)
-    if x.op is MetaOps.SINK: return UOp(UOps.SINK, src=in_uops)
+    if x.op is MetaOps.KERNEL: return UOp(UOps.SINK, src=in_uops)
     if x.op is UnaryOps.CAST: return UOp(UOps.CAST, x.arg.scalar(), in_uops)
     if x.op is UnaryOps.BITCAST: return UOp(UOps.BITCAST, x.arg.scalar(), in_uops)
     if x.op in ReduceOps:
@@ -149,7 +150,7 @@ class IndependentLowerer:
           UOp(UOps.CONTRACT, dtype=cast(DType, in_uops[0].dtype).vec(wmma_sz[0]), src=(in_uops[0],), arg=(upcast_axis[0],)),
           UOp(UOps.CONTRACT, dtype=cast(DType, in_uops[1].dtype).vec(wmma_sz[1]), src=(in_uops[1],), arg=(upcast_axis[1],)),
           UOp.const(dtype.vec(wmma_sz[2]), 0.0)), arg=x.arg)
-        return UOp(UOps.EXPAND, dtype, tuple(UOp(UOps.GEP, dtype, (ret,), i) for i in range(wmma_sz[2])), arg=upcast_axis[2])
+        return UOp(UOps.EXPAND, dtype, tuple(UOp(UOps.GEP, dtype, (ret,), i) for i in range(wmma_sz[2])), arg=((upcast_axis[2], wmma_sz[2]),))
       # NOTE: always using ridxs is fine here
       return UOp(UOps.REDUCE, dtype, (in_uops[0],) + tuple(self.ridxs[i] for i in x.arg), x.op)
     return UOp.alu(x.op, *in_uops)

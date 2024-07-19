@@ -1,7 +1,7 @@
 from typing import List, Dict, Optional, cast, Generator, Tuple
 import time, pprint
 from dataclasses import dataclass, replace
-from tinygrad.helpers import colored, getenv, DEBUG, GlobalCounters, ansilen, BEAM, NOOPT, all_int, CAPTURING, Metadata, Context
+from tinygrad.helpers import colored, getenv, DEBUG, GlobalCounters, ansilen, BEAM, NOOPT, all_int, CAPTURING, Metadata, Context, TRACEMETA
 from tinygrad.ops import MetaOps, LazyOp
 from tinygrad.dtype import dtypes
 from tinygrad.device import Device, Buffer
@@ -15,8 +15,7 @@ from tinygrad.engine.schedule import ScheduleItem
 logkerns, logkerns_level = open(getenv("LOGKERNS", ""), "a") if getenv("LOGKERNS", "") else None, getenv("LOGKERNS_LEVEL", 1)
 def get_kernel(renderer:Renderer, ast:LazyOp) -> Kernel:
   if DEBUG >= 5:
-    from tinygrad.engine.graph import print_tree
-    print_tree(ast)
+    print(ast)
   k = Kernel(ast, opts=renderer)
   k.required_optimizations()
   if not NOOPT:
@@ -183,13 +182,13 @@ class ExecItem:
         ptm = (colored(f"{et*1e3:9.2f}ms", "yellow") if et > 0.01 else f"{et*1e6:9.2f}us") if et is not None else ""
         print(f"{colored(f'*** {self.prg.dname[:7]:7s} {GlobalCounters.kernel_count:4d}', 'magenta' if jit else ('green' if self.prg.first_run else None))} {self.prg.display_name+' '*(38-ansilen(self.prg.display_name))} arg {len(self.bufs):3d} mem {GlobalCounters.mem_used/1e9:5.2f} GB " +  # noqa: E501
               (str() if et is None else f"tm {ptm}/{GlobalCounters.time_sum_s*1e3:9.2f}ms ({op_estimate/((et or 1e-20)*1e9):8.2f} GFLOPS, {mem_estimate/((et or 1e-20)*1e9):7.2f} GB/s)" +  # noqa: E501
-               f" {[repr(m) if DEBUG >= 3 else str(m) for m in self.metadata] if self.metadata else ''}"))
+               f" {[repr(m) if TRACEMETA >= 2 else str(m) for m in self.metadata] if self.metadata else ''}"))
       self.prg.first_run = False
     return et
 
 def lower_schedule_item(si:ScheduleItem) -> ExecItem:
   assert len(set(x.device for x in si.bufs)) == 1 or si.ast.op is MetaOps.COPY or getenv("USE_COPY_KERNEL")
-  if si.ast.op is MetaOps.SINK:
+  if si.ast.op is MetaOps.KERNEL:
     runner = get_runner(si.outputs[0].device, si.ast)
     return ExecItem(runner, [si.bufs[x[0]] for x in runner.p.globals], si.metadata)
   out = si.outputs[0]
