@@ -41,8 +41,7 @@ class BatchNorm:
 
   def calc_stats(self, x:Tensor) -> Tuple[Tensor, Tensor]:
     shape_mask = [1, -1, *([1]*(x.ndim-2))]
-    if self.track_running_stats and not Tensor.training:
-      return self.running_mean, self.running_var.reshape(shape=shape_mask).expand(x.shape)
+    if self.track_running_stats and not Tensor.training: return self.running_mean, self.running_var.reshape(shape=shape_mask).expand(x.shape)
     # This requires two full memory accesses to x
     # https://github.com/pytorch/pytorch/blob/c618dc13d2aa23625cb0d7ada694137532a4fa33/aten/src/ATen/native/cuda/Normalization.cuh
     # There's "online" algorithms that fix this, like https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_Online_algorithm
