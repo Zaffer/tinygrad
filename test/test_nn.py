@@ -37,7 +37,7 @@ class TestNN(unittest.TestCase):
         bn.bias = Tensor.randn(sz)
         bn.running_mean = Tensor.randn(sz)
         bn.running_var = Tensor.randn(sz)
-        bn.running_var.numpy()[bn.running_var.numpy() < 0] = 0
+        bn.running_var = Tensor.clip(bn.running_var, min_=1e-5)
 
         # create in torch
         with torch.no_grad():
@@ -94,6 +94,60 @@ class TestNN(unittest.TestCase):
     torch.nn.functional.batch_norm(t_x, t_mean, 1.0 / t_invstd**2, t_weight, t_bias)
 
     np.testing.assert_allclose(a.numpy(), b.numpy())
+
+  def test_batchnorm_no_running_stats(self):
+    sz = 4
+    bn = BatchNorm(sz, eps=1e-5, track_running_stats=False)
+    bn.weight = Tensor.randn(sz)
+    bn.bias = Tensor.randn(sz)
+
+    # Random input
+    inn = Tensor.randn(2, sz, 3, 3)
+
+    # Expected output (using batch statistics)
+    batch_mean = inn.mean(axis=(0, 2, 3))
+    batch_var = (inn - batch_mean.reshape(1, -1, 1, 1)).square().mean(axis=(0, 2, 3))
+    expected_out = (inn - batch_mean.reshape(1, -1, 1, 1)) / (batch_var.reshape(1, -1, 1, 1).add(bn.eps).sqrt())
+    expected_out = expected_out * bn.weight.reshape(1, -1, 1, 1) + bn.bias.reshape(1, -1, 1, 1)
+
+    # Check output during training (should match expected)
+    with Tensor.train(True):
+      outt = bn(inn)
+    np.testing.assert_allclose(outt.numpy(), expected_out.numpy(), atol=1e-5)
+
+    # Check output during inference (should still match expected)
+    with Tensor.train(False):
+      outt_inference = bn(inn)
+    np.testing.assert_allclose(outt_inference.numpy(), expected_out.numpy(), atol=1e-5)
+
+  def test_batchnorm_with_running_stats(self):
+    sz = 4
+    bn = BatchNorm(sz, eps=1e-5, track_running_stats=True, momentum=0.1)
+    bn.weight = Tensor.randn(sz)
+    bn.bias = Tensor.randn(sz)
+
+    # Random input
+    inn = Tensor.randn(2, sz, 3, 3)
+
+    # Check output during training (using batch statistics)
+    with Tensor.train(True):
+      outt = bn(inn)
+
+    # Update running statistics manually
+    batch_mean = inn.mean(axis=(0, 2, 3)).detach()
+    batch_var = (inn - batch_mean.reshape(1, -1, 1, 1)).square().mean(axis=(0, 2, 3)).detach()
+    running_mean = (1 - bn.momentum) * bn.running_mean + bn.momentum * batch_mean
+    running_var = (1 - bn.momentum) * bn.running_var + bn.momentum * batch_var
+
+    np.testing.assert_allclose(bn.running_mean.numpy(), running_mean.numpy(), atol=1e-5)
+    np.testing.assert_allclose(bn.running_var.numpy(), running_var.numpy(), atol=1e-5)
+
+    # Check output during inference (using running statistics)
+    with Tensor.train(False):
+      outt_inference = bn(inn)
+    expected_out_inference = (inn - bn.running_mean.reshape(1, -1, 1, 1)) / (bn.running_var.add(bn.eps).sqrt())
+    expected_out_inference = expected_out_inference * bn.weight.reshape(1, -1, 1, 1) + bn.bias.reshape(1, -1, 1, 1)
+    np.testing.assert_allclose(outt_inference.numpy(), expected_out_inference.numpy(), atol=1e-5)
 
   def test_linear(self):
     def _test_linear(x, in_dim, out_dim):
