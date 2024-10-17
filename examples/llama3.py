@@ -11,7 +11,11 @@ from tinygrad.helpers import Profiling, Timing, DEBUG, colored, fetch, tqdm
 class Tokenizer:
   pat_str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
   def __init__(self, model_path: str):
-    mergeable_ranks = load_tiktoken_bpe(model_path)
+    if model_path.rsplit('.', 1)[-1] == "json":
+      with open(model_path, 'r') as f: tokenizer_data = json.load(f)
+      mergeable_ranks = {k.encode('utf-8'): v for k, v in tokenizer_data['model']['vocab'].items()}
+    else: 
+      mergeable_ranks = load_tiktoken_bpe(model_path)
     self.num_base_tokens = len(mergeable_ranks)
     special_tokens = [
       "<|begin_of_text|>",
@@ -240,9 +244,9 @@ if __name__ == "__main__":
   print(f"seed = {Tensor._seed}")
   TEMPERATURE = args.temperature
 
-  tokenizer = Tokenizer(str((args.model if args.model.is_dir() else args.model.parent) / "tokenizer.model"))
+  tokenizer = Tokenizer(str(next((args.model if args.model.is_dir() else args.model.parent).glob("tokenizer.*"), None)))
   def encode_role(role: str):
-    return [tokenizer.special_tokens["<|start_header_id|>"]] + tokenizer.encode(role) + [tokenizer.special_tokens["<|end_header_id|>"]] + tokenizer.encode("\n\n")
+    return [tokenizer.special_tokens["<|start_header_id|>"]] + tokenizer.encode(role) + [tokenizer.special_tokens["<|end_header_id|>"]] # + tokenizer.encode(" ")
   def encode_message(role: str, content: str):
     return encode_role(role) + tokenizer.encode(content.strip()) + [tokenizer.special_tokens["<|eot_id|>"]]
 
